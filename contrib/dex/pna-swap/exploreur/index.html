@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P&A - LP Explorer</title>
+    <link rel="icon" href="../img/pna-logo.jpg">
+    <style>
+        /* ============================================
+           P&A LP Explorer — Design aligned with
+           BATHRON Block Explorer (bathron-explorer.php)
+           ============================================ */
+
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent: #7c3aed;
+            --accent-light: #a78bfa;
+            --success: #3fb950;
+            --warning: #d29922;
+            --error: #f85149;
+            --btc-orange: #f7931a;
+            --m1-purple: #8b5cf6;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        a { color: var(--accent-light); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* ---- Header (matches block explorer) ---- */
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 15px 0;
+            margin-bottom: 30px;
+        }
+
+        header .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--accent-light);
+            text-decoration: none;
+        }
+
+        .logo:hover { text-decoration: none; }
+
+        .logo img {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+        }
+
+        .logo .badge {
+            color: var(--text-secondary);
+            font-weight: normal;
+            font-size: 14px;
+            margin-left: 6px;
+            padding: 3px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 5px;
+        }
+
+        .nav-tab {
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .nav-tab:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+
+        .nav-tab.active {
+            background: var(--accent);
+            color: white;
+        }
+
+        /* ---- Network Status Banner ---- */
+        .network-banner {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 1px solid var(--accent);
+            border-radius: 12px;
+            padding: 24px 30px;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .network-banner::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--success), var(--accent));
+        }
+
+        .network-banner-left {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .network-banner-label {
+            color: var(--accent-light);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .network-banner-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        .network-banner-value .unit {
+            color: var(--accent-light);
+            font-size: 16px;
+            margin-left: 6px;
+        }
+
+        .network-banner-right {
+            display: flex;
+            gap: 30px;
+        }
+
+        .network-banner-stat {
+            text-align: center;
+        }
+
+        .network-banner-stat .nb {
+            font-size: 20px;
+            font-weight: 700;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        .network-banner-stat .lb {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* ---- Stats Grid (matches block explorer) ---- */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .stat-card .label {
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--text-primary);
+        }
+
+        .stat-card .value.accent { color: var(--accent-light); }
+        .stat-card .value.success { color: var(--success); }
+
+        .stat-card .sub {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* ---- Search / Filter Bar ---- */
+        .filter-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .search-input {
+            flex: 1;
+            padding: 10px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2);
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .filter-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: normal;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .filter-toggle input {
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+
+        .filter-pills {
+            display: flex;
+            gap: 6px;
+        }
+
+        .filter-pill {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .filter-pill:hover {
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+
+        .filter-pill.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        /* ---- Card (matches block explorer .card) ---- */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-header .count {
+            font-size: 12px;
+            font-weight: normal;
+            color: var(--text-secondary);
+            background: var(--bg-tertiary);
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+
+        /* ---- LP Grid ---- */
+        .lp-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 15px;
+            padding: 20px;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 14px;
+            padding: 40px 20px;
+            grid-column: 1 / -1;
+        }
+
+        /* ---- LP Card ---- */
+        .exp-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .exp-card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+        }
+
+        .lp-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .lp-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .lp-status-dot.online { background: var(--success); box-shadow: 0 0 6px rgba(63, 185, 80, 0.5); }
+        .lp-status-dot.degraded { background: var(--warning); }
+        .lp-status-dot.offline { background: var(--error); }
+        .lp-status-dot.new { background: var(--accent-light); box-shadow: 0 0 6px rgba(167, 139, 250, 0.5); }
+
+        .lp-name {
+            font-weight: 600;
+            font-size: 15px;
+            flex: 1;
+        }
+
+        /* Tier badges (matches block explorer .badge) */
+        .tier-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .tier-badge.tier-1 {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+
+        .tier-badge.tier-2 {
+            background: rgba(139, 148, 158, 0.1);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.2);
+        }
+
+        /* Connection tags */
+        .lp-live-tag {
+            font-size: 9px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: rgba(34, 211, 238, 0.12);
+            color: #22d3ee;
+            border: 1px solid rgba(34, 211, 238, 0.25);
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .lp-http-tag {
+            font-size: 9px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        /* Pair pills */
+        .lp-pairs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .lp-pair-pill {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(124, 58, 237, 0.1);
+            color: var(--accent-light);
+            border: 1px solid rgba(124, 58, 237, 0.2);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        /* Inventory dots */
+        .lp-inventory {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .lp-inv-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .lp-inv-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .lp-inv-dot.available { background: var(--success); }
+        .lp-inv-dot.unavailable { background: var(--text-secondary); opacity: 0.3; }
+
+        .exp-card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .exp-card-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ---- Detail View ---- */
+        .detail-back {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .detail-back button {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .detail-back button:hover {
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+
+        .detail-back .title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        /* Detail status bar */
+        .lpd-status-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px 20px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .lpd-status-text {
+            font-size: 14px;
+            text-transform: capitalize;
+            color: var(--text-secondary);
+        }
+
+        .lpd-no-ws {
+            font-size: 9px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .lpd-version {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        /* Detail sections */
+        .lpd-section { margin-bottom: 20px; }
+
+        .lpd-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+        }
+
+        /* KV Grid (matches block explorer stat-card layout) */
+        .lpd-kv-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+
+        .lpd-kv-grid .lpd-kv {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .lpd-kv-grid .lpd-k {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .lpd-kv-grid .lpd-v {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        /* Tables (matches block explorer table style) */
+        .lpd-table-scroll { overflow-x: auto; }
+
+        .lpd-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .lpd-table th {
+            text-align: left;
+            padding: 12px 20px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .lpd-table td {
+            padding: 12px 20px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 13px;
+        }
+
+        .lpd-table tr:last-child td { border-bottom: none; }
+        .lpd-table tr:hover { background: var(--bg-tertiary); }
+
+        .lpd-pair-name { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+        .lpd-rate-bid { color: var(--success); }
+        .lpd-rate-ask { color: var(--error); }
+        .lpd-minmax { color: var(--text-secondary); }
+        .lpd-avail-ok { color: var(--success); font-weight: 600; }
+        .lpd-avail-empty { color: var(--text-secondary); }
+
+        /* Detail grid (matches block explorer .detail-grid) */
+        .lpd-detail-grid {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .lpd-detail-grid > div {
+            padding: 12px 20px;
+            background: var(--bg-secondary);
+        }
+
+        .lpd-detail-grid .dg-label {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 13px;
+        }
+
+        .lpd-detail-grid .dg-value {
+            word-break: break-all;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 13px;
+        }
+
+        .lpd-detail-grid .dg-value a {
+            color: var(--accent-light);
+        }
+
+        /* On-chain KV list (alternative to detail-grid) */
+        .lpd-kv-list {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .lpd-kv-list .lpd-kv {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            gap: 12px;
+        }
+
+        .lpd-kv-list .lpd-kv:last-child { border-bottom: none; }
+
+        .lpd-kv-list .lpd-k {
+            font-size: 13px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .lpd-kv-list .lpd-v {
+            font-size: 13px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            color: var(--text-primary);
+            text-align: right;
+            word-break: break-all;
+        }
+
+        .lpd-kv-list a.lpd-v {
+            color: var(--accent-light);
+            text-decoration: none;
+        }
+
+        .lpd-kv-list a.lpd-v:hover { text-decoration: underline; }
+
+        /* ---- Supported Pairs Table (list view) ---- */
+        .pairs-summary {
+            padding: 0;
+        }
+
+        .pairs-summary table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .pairs-summary th {
+            text-align: left;
+            padding: 12px 20px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pairs-summary td {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        .pairs-summary tr:last-child td { border-bottom: none; }
+        .pairs-summary tr:hover { background: var(--bg-tertiary); }
+
+        .pair-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        .pair-lps {
+            color: var(--text-secondary);
+        }
+
+        .pair-best-bid { color: var(--success); font-family: 'SFMono-Regular', Consolas, monospace; }
+        .pair-best-ask { color: var(--error); font-family: 'SFMono-Regular', Consolas, monospace; }
+
+        /* ---- Footer (matches block explorer) ---- */
+        footer {
+            margin-top: 50px;
+            padding: 20px 0;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        footer a {
+            margin: 0 8px;
+            color: var(--text-secondary);
+        }
+
+        footer a:hover {
+            color: var(--accent-light);
+        }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 768px) {
+            header .container {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .network-banner {
+                flex-direction: column;
+                text-align: center;
+                gap: 16px;
+            }
+
+            .network-banner-right {
+                gap: 20px;
+            }
+
+            .lp-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .lpd-kv-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .lpd-detail-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .lpd-detail-grid .dg-label {
+                font-weight: 600;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .filter-bar {
+                flex-wrap: wrap;
+            }
+
+            .filter-pills {
+                order: 3;
+                width: 100%;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-tabs {
+                gap: 3px;
+            }
+
+            .nav-tab {
+                padding: 6px 10px;
+                font-size: 13px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a class="logo" href="/">
+                <img src="../img/pna-logo.jpg" alt="P&A">
+                P&A <span class="badge">LP Explorer</span>
+            </a>
+            <nav class="nav-tabs">
+                <a href="/" class="nav-tab">Swap</a>
+                <a href="/exploreur/" class="nav-tab active">LP Explorer</a>
+                <a href="https://explorer.example/" class="nav-tab" target="_blank">Blocks</a>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Network Status Banner -->
+        <div class="network-banner">
+            <div class="network-banner-left">
+                <div class="network-banner-label">P&A Liquidity Network</div>
+                <div class="network-banner-value">
+                    <span id="banner-total-lps">-</span>
+                    <span class="unit">LPs registered</span>
+                </div>
+            </div>
+            <div class="network-banner-right">
+                <div class="network-banner-stat">
+                    <div class="nb" id="banner-online" style="color: var(--success)">-</div>
+                    <div class="lb">Online</div>
+                </div>
+                <div class="network-banner-stat">
+                    <div class="nb" id="banner-pairs" style="color: var(--accent-light)">-</div>
+                    <div class="lb">Pairs</div>
+                </div>
+                <div class="network-banner-stat">
+                    <div class="nb" id="banner-ws" style="color: #22d3ee">-</div>
+                    <div class="lb">Live WS</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="label">Registered LPs</div>
+                <div class="value accent" id="stat-total">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Online</div>
+                <div class="value success" id="stat-online">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">MN-Backed (Tier 1)</div>
+                <div class="value" id="stat-operators">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Live WebSocket</div>
+                <div class="value" id="stat-live">-</div>
+            </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+            <input type="text" class="search-input" id="lp-search" placeholder="Search LP by name, address, or pair..." oninput="filterLPs()">
+            <div class="filter-pills">
+                <button class="filter-pill active" data-filter="all" onclick="setFilter('all', this)">All</button>
+                <button class="filter-pill" data-filter="online" onclick="setFilter('online', this)">Online</button>
+                <button class="filter-pill" data-filter="tier1" onclick="setFilter('tier1', this)">Operators</button>
+            </div>
+            <label class="filter-toggle">
+                <input type="checkbox" id="show-all-lps" checked onchange="toggleFilter()">
+                <span>Community</span>
+            </label>
+        </div>
+
+        <!-- LP List View -->
+        <div id="exp-list-view">
+            <!-- Pairs Summary Table -->
+            <div class="card" id="pairs-summary-card" style="display: none;">
+                <div class="card-header">
+                    <span>Active Pairs</span>
+                    <span class="count" id="pairs-count">0</span>
+                </div>
+                <div class="pairs-summary" id="pairs-summary-body">
+                </div>
+            </div>
+
+            <!-- LP Cards -->
+            <div class="card">
+                <div class="card-header">
+                    <span>Liquidity Providers</span>
+                    <span class="count" id="lp-count-badge">0</span>
+                </div>
+                <div id="exp-lp-list" class="lp-grid">
+                    <div class="empty-state">Discovering LPs via registry...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LP Detail View (hidden by default) -->
+        <div id="exp-detail-view" style="display: none;">
+            <div class="detail-back">
+                <button onclick="closeDetail()">&larr; Back to list</button>
+                <span class="title" id="exp-detail-title"></span>
+            </div>
+            <div id="exp-detail-body"></div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            P&A LP Explorer &middot;
+            <a href="/">Swap</a>
+            <a href="https://explorer.example/" target="_blank">Block Explorer</a>
+            <a href="https://github.com/AdonisPhusis/BATHRON" target="_blank">GitHub</a>
+            &middot; Testnet v0.2
+        </div>
+    </footer>
+
+    <script src="../js/exploreur.js?v=3"></script>
+</body>
+</html>

@@ -1,0 +1,227 @@
+[gd_scene load_steps=2 format=3 uid="uid://main_scene"]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.1, 0.1, 0.15, 1)
+
+[node name="VBox" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = -20.0
+theme_override_constants/separation = 15
+
+[node name="Header" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+
+[node name="Logo" type="Label" parent="VBox/Header"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "BATHRON"
+
+[node name="Title" type="Label" parent="VBox/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 28
+text = " Wallet"
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="Status" type="Label" parent="VBox/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "Connecting..."
+theme_override_colors/font_color = Color(1, 0.8, 0.2, 1)
+
+[node name="Sep1" type="HSeparator" parent="VBox"]
+layout_mode = 2
+
+[node name="BalancePanel" type="PanelContainer" parent="VBox"]
+layout_mode = 2
+
+[node name="BalanceVBox" type="VBoxContainer" parent="VBox/BalancePanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="M0Label" type="Label" parent="VBox/BalancePanel/BalanceVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "M0 Balance (Spendable)"
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="M0Value" type="Label" parent="VBox/BalancePanel/BalanceVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "0.00000000"
+theme_override_colors/font_color = Color(0.4, 0.9, 0.4, 1)
+
+[node name="M1Label" type="Label" parent="VBox/BalancePanel/BalanceVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "M1 Receipts (Locked)"
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="M1Value" type="Label" parent="VBox/BalancePanel/BalanceVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "0.00000000"
+theme_override_colors/font_color = Color(0.4, 0.7, 1.0, 1)
+
+[node name="Sep2" type="HSeparator" parent="VBox"]
+layout_mode = 2
+
+[node name="ActionsLabel" type="Label" parent="VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Settlement Actions"
+theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
+
+[node name="AmountHBox" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+
+[node name="AmountLabel" type="Label" parent="VBox/AmountHBox"]
+layout_mode = 2
+text = "Amount:"
+
+[node name="AmountInput" type="LineEdit" parent="VBox/AmountHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "1000"
+
+[node name="ButtonsHBox" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="LockBtn" type="Button" parent="VBox/ButtonsHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 18
+text = "Lock M0 → M1"
+
+[node name="UnlockBtn" type="Button" parent="VBox/ButtonsHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 18
+text = "Unlock M1 → M0"
+
+[node name="Sep3" type="HSeparator" parent="VBox"]
+layout_mode = 2
+
+[node name="ReceiveLabel" type="Label" parent="VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Receive Address"
+theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
+
+[node name="ReceiveHBox" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+theme_override_constants/separation = 5
+
+[node name="ReceiveAddress" type="LineEdit" parent="VBox/ReceiveHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+editable = false
+placeholder_text = "Loading..."
+theme_override_font_sizes/font_size = 12
+
+[node name="CopyBtn" type="Button" parent="VBox/ReceiveHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Copy"
+
+[node name="Sep4" type="HSeparator" parent="VBox"]
+layout_mode = 2
+
+[node name="ReceiptsLabel" type="Label" parent="VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "M1 Receipts"
+theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
+
+[node name="ReceiptsList" type="ItemList" parent="VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 12
+
+[node name="Spacer" type="Control" parent="VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="Footer" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+
+[node name="BlockHeight" type="Label" parent="VBox/Footer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Block: -"
+theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
+
+[node name="SyncStatus" type="Label" parent="VBox/Footer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Sync: --"
+theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
+
+[node name="Spacer" type="Control" parent="VBox/Footer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Peers" type="Label" parent="VBox/Footer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Peers: -"
+theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
+
+[node name="RefreshTimer" type="Timer" parent="."]
+wait_time = 10.0
+autostart = true
+
+[node name="PassphraseDialog" type="AcceptDialog" parent="."]
+unique_name_in_owner = true
+title = "Wallet Passphrase"
+size = Vector2i(350, 150)
+visible = false
+
+[node name="VBox" type="VBoxContainer" parent="PassphraseDialog"]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 342.0
+offset_bottom = 100.0
+
+[node name="Label" type="Label" parent="PassphraseDialog/VBox"]
+layout_mode = 2
+text = "Enter wallet passphrase to sign transaction:"
+
+[node name="PassphraseInput" type="LineEdit" parent="PassphraseDialog/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+secret = true
+placeholder_text = "Passphrase (never stored)"

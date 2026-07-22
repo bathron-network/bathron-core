@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P&A - Trustless Cross-Chain Settlement</title>
+    <link rel="icon" href="img/pna-logo.jpg">
+    <link rel="stylesheet" href="css/style.css?v=34">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <img src="img/pna-logo.jpg" alt="P&A" class="logo-img">
+                <span class="logo-text">P&A</span>
+            </div>
+            <div class="tagline">Trustless Cross-Chain Settlement</div>
+        </header>
+
+        <!-- ============================================================ -->
+        <!-- Swap -->
+        <!-- ============================================================ -->
+        <div id="tab-swap">
+
+            <!-- Main Swap Card -->
+            <main class="swap-card">
+                <!-- Input Section -->
+                <div class="swap-section">
+                    <label class="section-label">You send</label>
+                    <div class="input-row">
+                        <input type="number" id="input-amount" class="amount-input" placeholder="0.00" step="any" min="0">
+                        <div class="asset-selector" id="from-selector" onclick="openAssetModal('from')">
+                            <span class="asset-icon" id="from-icon">&#x20bf;</span>
+                            <span class="asset-name" id="from-name">BTC</span>
+                            <span class="dropdown-arrow">&#x25bc;</span>
+                        </div>
+                    </div>
+                    <div class="input-hint">
+                        <span id="from-network">Bitcoin Signet</span>
+                        <span id="from-balance" class="balance">-</span>
+                    </div>
+                </div>
+
+                <!-- Swap Arrow -->
+                <div class="swap-arrow">
+                    <button class="arrow-circle" id="swap-direction" onclick="swapDirection()" title="Swap direction">
+                        &#x21C5;
+                    </button>
+                </div>
+
+                <!-- Output Section -->
+                <div class="swap-section output">
+                    <label class="section-label">You receive</label>
+                    <div class="output-row">
+                        <span id="output-amount" class="output-amount">0.00</span>
+                        <div class="asset-selector" id="to-selector" onclick="openAssetModal('to')">
+                            <span class="asset-icon" id="to-icon">$</span>
+                            <span class="asset-name" id="to-name">USDC</span>
+                            <span class="dropdown-arrow">&#x25bc;</span>
+                        </div>
+                    </div>
+                    <div class="output-hint">
+                        <span id="to-network">Base</span>
+                    </div>
+                </div>
+
+                <!-- LP Provider Info -->
+                <div class="lp-provider-row">
+                    <div class="lp-provider-left">
+                        <span id="lp-tier-badge" class="tier-badge" style="display:none">MN Verified</span>
+                        <span id="lp-count" class="lp-count"></span>
+                    </div>
+                    <label class="show-all-toggle">
+                        <input type="checkbox" id="show-all-lps" onchange="toggleShowAllLPs()">
+                        <span class="toggle-label">Show all providers</span>
+                    </label>
+                </div>
+
+                <!-- Rate Info -->
+                <div class="rate-info">
+                    <div class="rate-row">
+                        <span class="rate-label">Rate</span>
+                        <span id="rate-value" class="rate-value">-</span>
+                    </div>
+                    <div class="rate-row route-row">
+                        <span class="rate-label">Route</span>
+                        <div id="route-value" class="rate-value route">-</div>
+                    </div>
+                    <div class="rate-row">
+                        <span class="rate-label">Settlement</span>
+                        <span id="time-value" class="rate-value time">-</span>
+                    </div>
+                    <div class="rate-row">
+                        <span class="rate-label">BTC finality</span>
+                        <span id="btc-finality-value" class="rate-value time">-</span>
+                    </div>
+                </div>
+
+                <!-- Quote Breakdown (visible when amount entered) -->
+                <div class="quote-breakdown" id="quote-breakdown" style="display: none;">
+                    <div class="breakdown-row">
+                        <span>You send</span>
+                        <span id="bd-send" class="bd-value">-</span>
+                    </div>
+                    <div class="breakdown-row">
+                        <span>You receive</span>
+                        <span id="bd-receive" class="bd-value bd-highlight">-</span>
+                    </div>
+                    <div class="breakdown-row bd-detail">
+                        <span>Market rate</span>
+                        <span id="bd-rate-market" class="bd-value">-</span>
+                    </div>
+                    <div class="breakdown-row bd-detail">
+                        <span>LP spread</span>
+                        <span id="bd-spread" class="bd-value">-</span>
+                    </div>
+                    <div class="breakdown-row bd-detail">
+                        <span>Effective rate</span>
+                        <span id="bd-rate-effective" class="bd-value">-</span>
+                    </div>
+                </div>
+
+                <!-- Destination Address -->
+                <div class="address-section">
+                    <label class="section-label" id="dest-label">Your destination address</label>
+                    <input type="text" id="dest-address" class="address-input" placeholder="">
+                </div>
+
+                <!-- Swap Button -->
+                <button id="swap-btn" class="swap-btn" disabled>
+                    <span class="btn-text">Enter amount</span>
+                </button>
+
+                <!-- Disclaimer -->
+                <div class="disclaimer">
+                    Trustless atomic swap via HTLC. No custody. No intermediary.
+                    <br>
+                    <a href="#how-it-works" class="learn-more">How it works &#x2192;</a>
+                </div>
+            </main>
+
+            <!-- How it Works -->
+            <section id="how-it-works" class="how-section">
+                <h3 class="section-heading">How P&A Works</h3>
+                <div class="how-content">
+                    <div class="how-step">
+                        <div class="how-number">1</div>
+                        <div class="how-text">
+                            <strong>You lock funds</strong> in a time-locked script (HTLC).
+                            Only you can refund if the swap fails.
+                        </div>
+                    </div>
+                    <div class="how-step">
+                        <div class="how-number">2</div>
+                        <div class="how-text">
+                            <strong>LP locks counterpart</strong> with matching hashlock.
+                            BATHRON settlement provides fast finality (~1 min).
+                        </div>
+                    </div>
+                    <div class="how-step">
+                        <div class="how-number">3</div>
+                        <div class="how-text">
+                            <strong>Atomic execution:</strong> Either both sides complete,
+                            or both refund. No partial state. No trust required.
+                        </div>
+                    </div>
+                </div>
+                <div class="how-footer">
+                    <span class="security-badge">&#x1f510; Non-custodial</span>
+                    <span class="security-badge">&#x26a1; Permissionless</span>
+                    <span class="security-badge">&#x1f517; Trustless</span>
+                </div>
+            </section>
+
+            <!-- Swap Explorer -->
+            <section id="swap-explorer" class="explorer-section">
+                <h3 class="section-heading">Recent Swaps</h3>
+                <div id="explorer-list" class="explorer-list">
+                    <div class="explorer-empty">Loading...</div>
+                </div>
+            </section>
+
+        </div><!-- /tab-swap -->
+
+
+        <!-- Asset Selection Modal -->
+        <div id="asset-modal" class="modal hidden">
+            <div class="modal-backdrop" onclick="closeAssetModal()"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Select asset</h3>
+                    <button class="modal-close" onclick="closeAssetModal()">&times;</button>
+                </div>
+                <div class="asset-list" id="asset-list">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Swap Status Modal -->
+        <div id="swap-modal" class="modal hidden">
+            <div class="modal-backdrop" onclick="closeSwapModal()"></div>
+            <div class="modal-content swap-modal-content">
+                <div class="modal-header">
+                    <h3>Swap Status</h3>
+                    <button class="modal-close" id="swap-modal-close" onclick="closeSwapModal()">&times;</button>
+                </div>
+
+                <div class="status-id">
+                    Swap ID: <code id="swap-id">-</code>
+                </div>
+
+                <!-- Deposit Instructions (shown during awaiting_btc) -->
+                <div id="deposit-box" class="deposit-box hidden">
+                    <div class="deposit-label">Send exactly:</div>
+                    <div class="deposit-amount" id="deposit-amount">-</div>
+                    <div class="deposit-label">To this BTC address:</div>
+                    <div class="deposit-address-row">
+                        <code class="deposit-address" id="deposit-address">-</code>
+                        <button class="copy-btn" onclick="copyDepositAddress()" title="Copy address">&#x2398;</button>
+                    </div>
+                    <div class="deposit-note">
+                        <div class="deposit-fee-info">
+                            <span class="fee-instant">Instant swap: fee >= <strong id="min-feerate">4</strong> sats/vB (~<strong id="min-fee-sats">560</strong> sats)</span>
+                            <span class="fee-standard">Lower fee = wait 1 confirmation (~10 min)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="progress-steps">
+                    <div class="step" data-step="1">
+                        <div class="step-indicator">
+                            <div class="step-circle">1</div>
+                            <div class="step-line"></div>
+                        </div>
+                        <div class="step-content">
+                            <div class="step-title" id="step1-title">Fund BTC</div>
+                            <div class="step-desc" id="step1-desc">Send BTC to HTLC address</div>
+                        </div>
+                    </div>
+
+                    <div class="step" data-step="2">
+                        <div class="step-indicator">
+                            <div class="step-circle">2</div>
+                            <div class="step-line"></div>
+                        </div>
+                        <div class="step-content">
+                            <div class="step-title" id="step2-title">Confirmations</div>
+                            <div class="step-desc" id="step2-desc">Waiting for BTC confirmation</div>
+                        </div>
+                    </div>
+
+                    <div class="step" data-step="3">
+                        <div class="step-indicator">
+                            <div class="step-circle">3</div>
+                            <div class="step-line"></div>
+                        </div>
+                        <div class="step-content">
+                            <div class="step-title" id="step3-title">Settlement</div>
+                            <div class="step-desc" id="step3-desc">LP claims BTC, USDC released</div>
+                        </div>
+                    </div>
+
+                    <div class="step" data-step="4">
+                        <div class="step-indicator">
+                            <div class="step-circle">4</div>
+                        </div>
+                        <div class="step-content">
+                            <div class="step-title" id="step4-title">USDC received</div>
+                            <div class="step-desc" id="step4-desc">In your wallet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="status-message" class="status-message"></div>
+
+                <!-- Transaction Links -->
+                <div id="tx-links" class="tx-links hidden">
+                    <a id="tx-link-btc" class="tx-link hidden" target="_blank">BTC deposit</a>
+                    <a id="tx-link-evm" class="tx-link hidden" target="_blank">USDC claim</a>
+                </div>
+
+                <div class="status-actions">
+                    <button id="btc-sent-btn" class="secondary-btn hidden" onclick="notifyBtcFunded()">I've sent BTC</button>
+                    <button id="new-swap-btn" class="secondary-btn hidden" onclick="resetSwap()">New Swap</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Verification Modal (shown before user sends S_user) -->
+        <div id="verify-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content verify-modal-content">
+                <div class="modal-header">
+                    <h3>Verify LP Locks</h3>
+                </div>
+                <div class="verify-body">
+                    <div class="verify-row verify-highlight">
+                        <span class="verify-label">USDC Locked</span>
+                        <span class="verify-value" id="verify-usdc-amount">-</span>
+                    </div>
+                    <div class="verify-row">
+                        <span class="verify-label">USDC HTLC</span>
+                        <a id="verify-evm-link" class="verify-link" target="_blank" rel="noopener">View on Basescan</a>
+                    </div>
+                    <div class="verify-divider"></div>
+                    <div class="verify-row">
+                        <span class="verify-label">H_user</span>
+                        <code class="verify-hash" id="verify-h-user">-</code>
+                    </div>
+                    <div class="verify-row">
+                        <span class="verify-label">H_lp1</span>
+                        <code class="verify-hash" id="verify-h-lp1">-</code>
+                    </div>
+                    <div class="verify-row">
+                        <span class="verify-label">H_lp2</span>
+                        <code class="verify-hash" id="verify-h-lp2">-</code>
+                    </div>
+                    <div class="verify-divider"></div>
+                    <div class="verify-row">
+                        <span class="verify-label">Your BTC TX</span>
+                        <a id="verify-btc-link" class="verify-link" target="_blank" rel="noopener">View on mempool</a>
+                    </div>
+                </div>
+                <div id="verify-warning" class="verify-warning hidden">
+                    <span id="verify-warning-text"></span>
+                </div>
+                <div class="verify-actions">
+                    <button id="verify-confirm-btn" class="swap-btn" onclick="confirmPresign()">
+                        <span class="btn-text">Confirm &amp; Complete Swap</span>
+                    </button>
+                    <button class="secondary-btn verify-cancel-btn" onclick="cancelPresign()">
+                        Cancel (refund after timeout)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-links">
+                <a href="/exploreur/">LP Explorer</a>
+                <span class="sep">&bull;</span>
+                <a href="https://explorer.example/" target="_blank">Block Explorer</a>
+                <span class="sep">&bull;</span>
+                <a href="https://github.com/AdonisPhusis/BATHRON" target="_blank">GitHub</a>
+                <span class="sep">&bull;</span>
+                <span class="version">Testnet v0.2 (FlowSwap 3S)</span>
+            </div>
+            <div class="footer-note">
+                Powered by the BATHRON settlement kernel
+            </div>
+        </footer>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js" crossorigin="anonymous"></script>
+    <script src="js/pna.js?v=34"></script>
+</body>
+</html>
