@@ -1,0 +1,18 @@
+{
+  "exporter_version":"2.0",
+  "source_commit":"dc82d92f18454d4183c8f1c9c78b8f32bbfaec26",
+  "utc":"2026-07-22T22:03:30Z",
+  "tree_sha256":"d097b6e008f9b59612a27eaae84d81b161fd236e43b931b1efd75626a9a6c59b",
+  "file_count":1287,
+  "result":"PASS",
+  "checks":[
+    {"check":"internal_markers","result":"pass","hits":[]},
+    {"check":"literal_creds","result":"pass","hits":[]},
+    {"check":"private_keys","result":"pass","hits":[]},
+    {"check":"private_path_refs","result":"pass","hits":[]},
+    {"check":"public_rpc","result":"pass","hits":[]},
+    {"check":"fleet_identifiers","result":"pass","hits":[]},
+    {"check":"endpoint_allowlist","result":"pass","hits":[]},
+    {"check":"licenses","result":"pass","hits":[]}
+  ]
+}

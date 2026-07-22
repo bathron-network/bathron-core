@@ -1,0 +1,12 @@
+Building BATHRON
+
+Use the autogen script to prepare the build environment.
+
+    ./autogen.sh
+    ./configure --without-gui --disable-tests --disable-bench
+    make
+
+Always verify the signatures and checksums.
+
+bathrond is the intended-for-services, no-graphical-interface,
+reference implementation of BATHRON.

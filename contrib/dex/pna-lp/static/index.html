@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P&A LP Dashboard</title>
+    <link rel="icon" href="img/pna-logo.jpg">
+    <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <img src="img/pna-logo.jpg" alt="P&A" class="logo-img">
+                <span class="logo-text">P&A Dashboard</span>
+            </div>
+
+            <nav class="nav">
+                <a href="#" class="nav-item active" data-page="overview">
+                    <span class="nav-icon">&#9632;</span>
+                    Overview
+                </a>
+                <a href="#" class="nav-item" data-page="config">
+                    <span class="nav-icon">&#9881;</span>
+                    LP Config
+                </a>
+                <a href="#" class="nav-item" data-page="pricing">
+                    <span class="nav-icon">&#36;</span>
+                    Settlement
+                </a>
+                <a href="#" class="nav-item" data-page="swaps">
+                    <span class="nav-icon">&#8644;</span>
+                    Swaps
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div id="sidebar-lp-name" style="font-weight:600; font-size:13px; margin-bottom:6px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                <div class="status-indicator">
+                    <span class="status-dot" id="api-status"></span>
+                    <span id="api-status-text">Connecting...</span>
+                </div>
+                <div class="version">SDK v0.1.0</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Overview Page -->
+            <section id="page-overview" class="page active">
+                <header class="page-header">
+                    <h1>Overview <span id="test-mode-badge" style="display:none; background:#ff9800; color:#fff; font-size:0.5em; padding:2px 8px; border-radius:4px; vertical-align:middle;">TEST MODE (spread=0)</span></h1>
+                    <div class="header-actions">
+                        <span class="last-update">Last update: <span id="last-update-time">-</span></span>
+                    </div>
+                </header>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Active Swaps</div>
+                        <div class="stat-value" id="stat-active-swaps">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Swaps</div>
+                        <div class="stat-value" id="stat-total-swaps">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Volume (24h)</div>
+                        <div class="stat-value" id="stat-volume">$0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Earnings (24h)</div>
+                        <div class="stat-value highlight" id="stat-earnings">$0</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Chain Status</h2>
+                    <div class="chain-status-grid" id="chain-status-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Recent Swaps</h2>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Pair</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recent-swaps-table">
+                            <tr><td colspan="5" class="empty">No swaps yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Chains page removed — wallets merged into LP Config -->
+
+            <!-- LP Config Page (Identity + Wallets) -->
+            <section id="page-config" class="page">
+                <header class="page-header">
+                    <h1>LP Configuration</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary btn-sm" onclick="debugWallets()">Debug Info</button>
+                        <button class="btn btn-secondary" onclick="loadConfigPage()">Refresh</button>
+                    </div>
+                </header>
+
+                <!-- LP Identity -->
+                <div class="card" style="margin-bottom: 20px;">
+                    <h2>LP Identity</h2>
+                    <p class="card-desc">This name is displayed to users on P&A Swap when your LP is selected for a route.</p>
+                    <div class="form-group">
+                        <label>Display Name</label>
+                        <input type="text" id="lp-display-name" placeholder="My LP" maxlength="32">
+                    </div>
+                    <div class="form-group">
+                        <label>LP ID</label>
+                        <input type="text" id="lp-id-display" disabled style="opacity: 0.6;">
+                    </div>
+                </div>
+
+                <!-- Dynamic Wallets -->
+                <div class="card">
+                    <h2>Wallets</h2>
+                    <div class="wallets-grid" id="config-wallets-grid">
+                        <!-- Populated dynamically by JS -->
+                        <div class="empty">Loading wallets...</div>
+                    </div>
+                </div>
+
+                <div class="actions-bar">
+                    <button class="btn btn-primary" onclick="saveAllConfig()">Save Configuration</button>
+                </div>
+            </section>
+
+            <!-- Pricing Page (extracted from old LP Config) -->
+            <section id="page-pricing" class="page">
+                <header class="page-header">
+                    <h1>Settlement Desk</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" onclick="refreshSettlementDesk()">Refresh Rates</button>
+                    </div>
+                </header>
+
+                <!-- Settlement Book (dynamic) -->
+                <div class="card">
+                    <h2>Settlement Book</h2>
+                    <table class="settlement-table" id="settlement-book">
+                        <thead>
+                            <tr>
+                                <th class="col-arrow"></th>
+                                <th>Pair</th>
+                                <th>Rate</th>
+                                <th>Spread</th>
+                                <th>Active</th>
+                            </tr>
+                        </thead>
+                        <tbody id="settlement-body">
+                            <tr><td colspan="5" class="empty">Loading pairs...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- BTC Confirmations -->
+                <div class="card">
+                    <h2>BTC Confirmations</h2>
+                    <p class="config-hint">More confirmations = safer but slower. LP assumes reorg risk.</p>
+                    <table class="pricing-table compact">
+                        <thead>
+                            <tr><th>Amount</th><th>Confirmations</th><th>Est. Time</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>&lt; 0.01 BTC</td>
+                                <td><input type="number" id="btc-conf-tier-1" value="1" min="1" max="6" class="tier-input"></td>
+                                <td id="btc-conf-tier-1-time">~10 min</td>
+                            </tr>
+                            <tr>
+                                <td>&lt; 0.1 BTC</td>
+                                <td><input type="number" id="btc-conf-tier-2" value="2" min="1" max="6" class="tier-input"></td>
+                                <td id="btc-conf-tier-2-time">~20 min</td>
+                            </tr>
+                            <tr>
+                                <td>&lt; 0.5 BTC</td>
+                                <td><input type="number" id="btc-conf-tier-3" value="3" min="1" max="6" class="tier-input"></td>
+                                <td id="btc-conf-tier-3-time">~30 min</td>
+                            </tr>
+                            <tr>
+                                <td>&ge; 0.5 BTC</td>
+                                <td><input type="number" id="btc-conf-tier-4" value="6" min="1" max="6" class="tier-input"></td>
+                                <td id="btc-conf-tier-4-time">~60 min</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Settings -->
+                <div class="card">
+                    <h2>Settings</h2>
+                    <div class="settings-grid">
+                        <div class="settings-col">
+                            <h4>API Keys <span class="config-hint">(optional, stored on server)</span></h4>
+                            <div class="form-group compact">
+                                <label>Binance API Key</label>
+                                <input type="password" id="api-key-binance" placeholder="Optional">
+                            </div>
+                            <div class="form-group compact">
+                                <label>Binance Secret</label>
+                                <input type="password" id="api-secret-binance" placeholder="Optional (for signed endpoints)">
+                            </div>
+                            <div class="form-group compact">
+                                <label>CoinGecko</label>
+                                <input type="password" id="api-key-coingecko" placeholder="Optional">
+                            </div>
+                            <div class="form-group compact">
+                                <label>Kraken</label>
+                                <input type="password" id="api-key-kraken" placeholder="Optional">
+                            </div>
+                        </div>
+                        <div class="settings-col">
+                            <h4>Automation</h4>
+                            <label class="checkbox-label"><input type="checkbox" id="auto-claim" checked> Auto-claim completed swaps</label>
+                            <label class="checkbox-label"><input type="checkbox" id="auto-refund" checked> Auto-refund expired swaps</label>
+                            <label class="checkbox-label"><input type="checkbox" id="auto-rebalance"> Auto-rebalance liquidity</label>
+                            <div class="form-group compact" style="margin-top: 8px;">
+                                <label>Rate Refresh</label>
+                                <select id="rate-refresh-interval">
+                                    <option value="5">5s</option>
+                                    <option value="10" selected>10s</option>
+                                    <option value="30">30s</option>
+                                    <option value="60">60s</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="actions-bar">
+                    <button class="btn btn-secondary" onclick="resetAllConfig()">Reset</button>
+                    <button class="btn btn-primary" onclick="saveAllConfig()">Save All</button>
+                </div>
+            </section>
+
+            <!-- Swaps Page -->
+            <section id="page-swaps" class="page">
+                <header class="page-header">
+                    <h1>Swap Management</h1>
+                    <div class="header-actions">
+                        <select id="swap-filter">
+                            <option value="">All Swaps</option>
+                            <option value="pending_deposit">Pending Deposit</option>
+                            <option value="confirming">Confirming</option>
+                            <option value="settling">Settling</option>
+                            <option value="complete">Complete</option>
+                        </select>
+                        <div class="unit-toggle" onclick="toggleM1Unit()">
+                            <span id="unit-label">SAT</span>
+                            <div class="toggle-switch" id="unit-toggle">
+                                <div class="toggle-knob"></div>
+                            </div>
+                            <span id="unit-label-alt">BTC</span>
+                        </div>
+                        <button class="btn btn-secondary" onclick="refreshSwaps()">Refresh</button>
+                    </div>
+                </header>
+
+                <div class="card">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Swap ID</th>
+                                <th>Legs (BTC&rarr;M1&rarr;USDC)</th>
+                                <th>Rate</th>
+                                <th>LP PnL (M1)</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="swaps-table">
+                            <tr><td colspan="6" class="empty">No swaps</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Wallets page removed — merged into LP Config -->
+        </main>
+    </div>
+
+    <script src="js/dashboard.js"></script>
+</body>
+</html>
