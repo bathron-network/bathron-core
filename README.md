@@ -52,6 +52,59 @@ timelock and reorganisation specification still requires formalisation and exter
 
 ---
 
+## Who provides the service and why
+
+BATHRON splits "run the ledger" from "run the business". The protocol enforces the money rules;
+**professionals provide the service and the liquidity.** Three roles — a single company may hold
+one, two or all three:
+
+- **Settlement Operator** — the consensus identity. Produces blocks and votes finality. Registers
+  by locking M0 collateral that can only originate from a verified, irreversible BTC destruction.
+  Sets no prices and ranks no one.
+- **Clearing Provider (CP)** — the client-facing service. Quotes, orchestrates the two legs,
+  handles timeouts, offers an SLA, and is paid through disclosed fees and spreads.
+- **Liquidity Provider (LP)** — the capital. Holds inventory and quotes a specific pair.
+
+The client never buys or manages M0/M1. The loop is:
+
+```
+client ──quote──▶ CP ──routes──▶ LP (inventory)
+   ▲                │
+   └──BTC / asset───┘   settled on ── Settlement Operators (consensus + finality)
+```
+
+Why a builder may choose to run an operator: an app brings **flow**; flow may generate fees and
+service revenue for whoever settles it — so the app's creator may run one, the way exchanges run
+their own Bitcoin nodes. Those revenues are a **market hypothesis, not a guarantee**. Whether
+identifiable, M0-collateralised operators who also run the service behave well enough for a market
+to form is the **institutional hypothesis BATHRON tests** — not an assumption.
+
+---
+
+## Security in one screen
+
+Every node fully validates every block; finality sits **on top of** validation, never bypassing
+it. So the **money supply is inviolable by the signing set** — but transaction *ordering and
+liveness* are not. What a coalition reaching the 2/3 finality threshold can and cannot do:
+
+| Action | Threshold coalition? |
+|---|---|
+| Create M0 without a valid burn | **No** (rejected by every node) |
+| Change M0↔M1 accounting | **No** (consensus-strict) |
+| Spend a client's key / force a Bitcoin transaction | **No** |
+| Censor a claim, or continue past it to a timeout | **Yes / potentially yes** |
+| Stall finality | **Yes** |
+| Produce conflicting certificates | **Yes, with enough equivocation** |
+| Make a node auto-accept a rollback of a height it already finalized | **No** — conflicting finalized history is rejected; the real risk is a **split + social recovery**, not a silent rollback |
+
+Operator identity and its public track record raise the *commercial* cost of misbehaving; they do
+**not** replace the assumption that fewer than one third of operators are byzantine, and they do
+not prove legal identity or future honesty. Economic openness and Sybil resistance remain to be
+demonstrated — the current testnet operator set is project-controlled. Full model:
+**[SECURITY-MODEL.md](doc/public/SECURITY-MODEL.md)**.
+
+---
+
 ## What the testnet has demonstrated
 
 - a Bitcoin Merkle proof checked against the Bitcoin header chain carried in BATHRON consensus;

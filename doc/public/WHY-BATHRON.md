@@ -1,7 +1,9 @@
 # Why BATHRON
 
 > The product hypothesis is conditional settlement. The chain, M0, M1 and the burn are the
-> machinery behind it—not assets offered to the public.
+> machinery behind it—not assets offered to the public. For how trust and the operator set
+> actually work, see [SECURITY-MODEL.md](SECURITY-MODEL.md) and
+> [SETTLEMENT-OPERATORS.md](SETTLEMENT-OPERATORS.md).
 
 ## 1. The unmet need
 
