@@ -45,8 +45,8 @@ const std::string CLIENT_NAME(PACKAGE_NAME);
 //! git will put "#define GIT_ARCHIVE 1" on the next line inside archives. 
 #define GIT_ARCHIVE 1
 #ifdef GIT_ARCHIVE
-#define GIT_COMMIT_ID "c8f5f6491b989e2b18eca27b64ba763bcf1b75bb"
-#define GIT_COMMIT_DATE "Thu, 23 Jul 2026 02:22:55 +0000"
+#define GIT_COMMIT_ID "87845d980745f1ebfb2867b963508a7f46086110"
+#define GIT_COMMIT_DATE "Thu, 23 Jul 2026 08:23:19 +0200"
 #endif
 
 #define BUILD_DESC_WITH_SUFFIX(maj, min, rev, build, suffix) \
