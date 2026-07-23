@@ -20,6 +20,7 @@
 #include "consensus/mn_validation.h"
 #include "masternode/specialtx_validation.h"  // IsSpecialTxHeightPermanentlyInvalid (rollover guard)
 #include "consensus/upgrades.h"
+#include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "masternode/blockproducer.h"
 #include "policy/policy.h"
