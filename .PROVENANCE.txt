@@ -1,11 +1,11 @@
 BATHRON public export — provenance
 source_repo: AdonisPhusis/BATHRON-V2 (privé)
-source_commit: 0397bf9aebc7dca7326362e8faf2905e0cde703b
+source_commit: 354eb029c19e3a0dd770796a4c80550238717cce
 exporter_version: 2.0
-utc: 2026-07-23T18:28:54Z
-tree_sha256: e7788c271f6208b49a981157acfef5f654dfe1a303263f4d8cccf477abe77a76
-file_count: 1271
+utc: 2026-07-23T19:50:30Z
+tree_sha256: aa4e69be643059402cd18e4f85c54e546bbe0c181fdcb95d6bce891b6d691136
+file_count: 1268
 note: historique git NEUF au lancement — la provenance granulaire du dépôt
       privé n'est PAS vérifiable publiquement ; seule l'identité du SHA source
       atteste la provenance. Reproductible par un lecteur autorisé de
-      BATHRON-V2 : contrib/testnet/export_public_launch_repo.sh 0397bf9aebc7dca7326362e8faf2905e0cde703b
+      BATHRON-V2 : contrib/testnet/export_public_launch_repo.sh 354eb029c19e3a0dd770796a4c80550238717cce
