@@ -8,7 +8,8 @@ qt_linux_packages:=qt expat libxcb xcb_proto libXau xproto freetype fontconfig
 qt_darwin_packages=qt
 qt_mingw32_packages=qt
 
-wallet_packages=bdb
+# BerkeleyDB retiré (642b106) — le wallet BATHRON est SQLite.
+wallet_packages=sqlite
 
 zmq_packages=zeromq
 
