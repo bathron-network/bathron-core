@@ -17,18 +17,18 @@
 
 set -e
 
-# Config - detect BTC CLI location
-if [ -f "/home/ubuntu/bitcoin-27.0/bin/bitcoin-cli" ]; then
-    BTCDIR="/home/ubuntu/.bitcoin-signet"
-    BTCCLI="/home/ubuntu/bitcoin-27.0/bin/bitcoin-cli -datadir=$BTCDIR"
-elif [ -f "/home/ubuntu/bitcoin/bin/bitcoin-cli" ]; then
-    BTCDIR="/home/ubuntu/.bitcoin-signet"
-    BTCCLI="/home/ubuntu/bitcoin/bin/bitcoin-cli -signet -datadir=$BTCDIR"
-elif [ -f "/home/ubuntu/BATHRON/BTCTESTNET/bitcoin-27.0/bin/bitcoin-cli" ]; then
-    BTCDIR="/home/ubuntu/BATHRON/BTCTESTNET/data"
-    BTCCLI="/home/ubuntu/BATHRON/BTCTESTNET/bitcoin-27.0/bin/bitcoin-cli -datadir=$BTCDIR"
+# Config - detect BTC CLI location (override with BTC_CLI / BTC_DATADIR env vars)
+BTCDIR="${BTC_DATADIR:-$HOME/.bitcoin-signet}"
+if [ -n "${BTC_CLI:-}" ]; then
+    BTCCLI="$BTC_CLI -datadir=$BTCDIR"
+elif [ -f "$HOME/bitcoin-27.0/bin/bitcoin-cli" ]; then
+    BTCCLI="$HOME/bitcoin-27.0/bin/bitcoin-cli -datadir=$BTCDIR"
+elif [ -f "$HOME/bitcoin/bin/bitcoin-cli" ]; then
+    BTCCLI="$HOME/bitcoin/bin/bitcoin-cli -signet -datadir=$BTCDIR"
+elif command -v bitcoin-cli >/dev/null 2>&1; then
+    BTCCLI="bitcoin-cli -datadir=$BTCDIR"
 else
-    echo "Error: bitcoin-cli not found"
+    echo "Error: bitcoin-cli not found (set BTC_CLI=/path/to/bitcoin-cli)"
     exit 1
 fi
 

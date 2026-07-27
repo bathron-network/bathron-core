@@ -136,8 +136,10 @@ class BTCWitnessWatcher:
             btc_cli_path: Path to bitcoin-cli (for CLI-based access)
         """
         self.btc_rpc_url = btc_rpc_url
-        self.btc_cli_path = btc_cli_path or "/home/ubuntu/bitcoin/bin/bitcoin-cli"
-        self.btc_datadir = "/home/ubuntu/.bitcoin-signet"
+        self.btc_cli_path = (btc_cli_path or os.environ.get("BTC_CLI")
+                             or os.path.expanduser("~/bitcoin/bin/bitcoin-cli"))
+        self.btc_datadir = os.environ.get(
+            "BTC_DATADIR", os.path.expanduser("~/.bitcoin-signet"))
 
         # Tracked HTLCs: htlc_address -> {hashlocks, callback}
         self.tracked_htlcs: Dict[str, dict] = {}

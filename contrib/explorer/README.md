@@ -1,5 +1,10 @@
 # BATHRON Explorer
 
+> **Status: experimental prototype.** This component is a working demonstrator for
+> the BATHRON public testnet. It is suitable for testing and exploration, not for
+> production use, and its interfaces may change without notice.
+
+
 Lightweight block explorer for the BATHRON network.
 
 **Live:** [https://explorer.example](https://explorer.example) <!-- TODO-PUBLIC-SEED -->

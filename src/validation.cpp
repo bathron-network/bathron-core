@@ -1880,7 +1880,7 @@ static int64_t nTimeTotal = 0;
  *  can fail if those validity checks fail (among other reasons). */
 static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& view, bool fJustCheck = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    LogPrintf("DEBUG-HANG: ConnectBlock ENTER height=%d block=%s nTx=%d\n",
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectBlock ENTER height=%d block=%s nTx=%d\n",
               pindex ? pindex->nHeight : -1, block.GetHash().ToString().substr(0, 16), block.vtx.size());
     AssertLockHeld(cs_main);
     // Check it again in case a previous version let a bad block in
@@ -2238,12 +2238,12 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     nTimeVerify += nTime2 - nTimeStart;
     LogPrint(BCLog::BENCHMARK, "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs]\n", nInputs - 1, 0.001 * (nTime2 - nTimeStart), nInputs <= 1 ? 0 : 0.001 * (nTime2 - nTimeStart) / (nInputs - 1), nTimeVerify * 0.000001);
 
-    LogPrintf("DEBUG-HANG: ConnectBlock calling ProcessSpecialTxsInBlock (nTx=%d)...\n", block.vtx.size());
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectBlock calling ProcessSpecialTxsInBlock (nTx=%d)...\n", block.vtx.size());
     if (!ProcessSpecialTxsInBlock(block, pindex, &view, state, fJustCheck)) {
-        LogPrintf("DEBUG-HANG: ProcessSpecialTxsInBlock FAILED: %s\n", FormatStateMessage(state));
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ProcessSpecialTxsInBlock FAILED: %s\n", FormatStateMessage(state));
         return error("%s: Special tx processing failed with %s", __func__, FormatStateMessage(state));
     }
-    LogPrintf("DEBUG-HANG: ProcessSpecialTxsInBlock OK\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ProcessSpecialTxsInBlock OK\n");
 
     int64_t nTime3 = GetTimeMicros();
     nTimeProcessSpecial += nTime3 - nTime2;
@@ -2597,7 +2597,7 @@ public:
  */
 bool static ConnectTip(CValidationState& state, CBlockIndex* pindexNew, const std::shared_ptr<const CBlock>& pblock, ConnectTrace& connectTrace, DisconnectedBlockTransactions &disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    LogPrintf("DEBUG-HANG: ConnectTip ENTER height=%d block=%s\n",
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip ENTER height=%d block=%s\n",
               pindexNew ? pindexNew->nHeight : -1, pindexNew ? pindexNew->GetBlockHash().ToString().substr(0, 16) : "null");
     AssertLockHeld(cs_main);
     AssertLockHeld(mempool.cs);
@@ -2622,14 +2622,14 @@ bool static ConnectTip(CValidationState& state, CBlockIndex* pindexNew, const st
     int64_t nTime3;
     LogPrint(BCLog::BENCHMARK, "  - Load block from disk: %.2fms [%.2fs]\n", (nTime2 - nTime1) * 0.001, nTimeReadFromDisk * 0.000001);
     {
-        LogPrintf("DEBUG-HANG: ConnectTip evoDb->BeginTransaction...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip evoDb->BeginTransaction...\n");
         auto dbTx = evoDb->BeginTransaction();
-        LogPrintf("DEBUG-HANG: ConnectTip got evoDB transaction\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip got evoDB transaction\n");
 
         CCoinsViewCache view(pcoinsTip.get());
-        LogPrintf("DEBUG-HANG: ConnectTip calling ConnectBlock...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip calling ConnectBlock...\n");
         bool rv = ConnectBlock(blockConnecting, state, pindexNew, view, false);
-        LogPrintf("DEBUG-HANG: ConnectTip ConnectBlock returned %d\n", rv);
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip ConnectBlock returned %d\n", rv);
         GetMainSignals().BlockChecked(blockConnecting, state);
         if (!rv) {
             if (state.IsInvalid())
@@ -2639,13 +2639,13 @@ bool static ConnectTip(CValidationState& state, CBlockIndex* pindexNew, const st
         nTime3 = GetTimeMicros();
         nTimeConnectTotal += nTime3 - nTime2;
         LogPrint(BCLog::BENCHMARK, "  - Connect total: %.2fms [%.2fs]\n", (nTime3 - nTime2) * 0.001, nTimeConnectTotal * 0.000001);
-        LogPrintf("DEBUG-HANG: ConnectTip calling view.Flush...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip calling view.Flush...\n");
         bool flushed = view.Flush();
-        LogPrintf("DEBUG-HANG: ConnectTip view.Flush returned %d\n", flushed);
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip view.Flush returned %d\n", flushed);
         assert(flushed);
-        LogPrintf("DEBUG-HANG: ConnectTip calling dbTx->Commit...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip calling dbTx->Commit...\n");
         dbTx->Commit();
-        LogPrintf("DEBUG-HANG: ConnectTip dbTx->Commit OK\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectTip dbTx->Commit OK\n");
     }
     int64_t nTime4 = GetTimeMicros();
     nTimeFlush += nTime4 - nTime3;
@@ -2817,9 +2817,9 @@ static bool ActivateBestChainStep(CValidationState& state, CBlockIndex* pindexMo
         nHeight = nTargetHeight;
 
         // Connect new blocks.
-        LogPrintf("DEBUG-HANG: ActivateBestChainStep connecting %d blocks\n", vpindexToConnect.size());
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep connecting %d blocks\n", vpindexToConnect.size());
         for (CBlockIndex* pindexConnect : reverse_iterate(vpindexToConnect)) {
-            LogPrintf("DEBUG-HANG: ActivateBestChainStep calling ConnectTip for height=%d\n", pindexConnect->nHeight);
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep calling ConnectTip for height=%d\n", pindexConnect->nHeight);
             if (!ConnectTip(state, pindexConnect, (pindexConnect == pindexMostWork) ? pblock : std::shared_ptr<const CBlock>(), connectTrace, disconnectpool)) {
                 if (state.IsInvalid()) {
                     // The block violates a consensus rule.
@@ -2877,7 +2877,7 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
     // us in the middle of ProcessNewBlock - do not assume pblock is set
     // sanely for performance or correctness!
     AssertLockNotHeld(cs_main);
-    LogPrintf("DEBUG-HANG: ActivateBestChain ENTER block=%s\n", pblock ? pblock->GetHash().ToString().substr(0, 16) : "null");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain ENTER block=%s\n", pblock ? pblock->GetHash().ToString().substr(0, 16) : "null");
 
     // Increment counter to prevent DMM from producing while we're syncing
     // Uses counter to handle recursive/nested calls correctly
@@ -2887,32 +2887,32 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
     // because this function periodically releases cs_main so that it does not lock up other threads for too long
     // during large connects - and to allow for e.g. the callback queue to drain
     // we use m_cs_chainstate to enforce mutual exclusion so that only one caller may execute this function at a time
-    LogPrintf("DEBUG-HANG: ActivateBestChain acquiring m_cs_chainstate...\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain acquiring m_cs_chainstate...\n");
     LOCK(m_cs_chainstate);
-    LogPrintf("DEBUG-HANG: ActivateBestChain got m_cs_chainstate\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain got m_cs_chainstate\n");
 
     CBlockIndex* pindexNewTip = nullptr;
     CBlockIndex* pindexMostWork = nullptr;
     do {
-        LogPrintf("DEBUG-HANG: ActivateBestChain loop iteration start\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain loop iteration start\n");
         boost::this_thread::interruption_point();
 
         int pending = GetMainSignals().CallbacksPending();
         if (pending > 10) {
-            LogPrintf("DEBUG-HANG: ActivateBestChain SyncWithValidationInterfaceQueue (pending=%d)...\n", pending);
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain SyncWithValidationInterfaceQueue (pending=%d)...\n", pending);
             // Block until the validation queue drains. This should largely
             // never happen in normal operation, however may happen during
             // reindex, causing memory blowup  if we run too far ahead.
             SyncWithValidationInterfaceQueue();
-            LogPrintf("DEBUG-HANG: ActivateBestChain SyncWithValidationInterfaceQueue DONE\n");
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain SyncWithValidationInterfaceQueue DONE\n");
         }
 
         {
-            LogPrintf("DEBUG-HANG: ActivateBestChain acquiring cs_main...\n");
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain acquiring cs_main...\n");
             LOCK(cs_main);
-            LogPrintf("DEBUG-HANG: ActivateBestChain got cs_main, acquiring mempool.cs...\n");
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain got cs_main, acquiring mempool.cs...\n");
             LOCK(mempool.cs); // Lock transaction pool for at least as long as it takes for connectTrace to be consumed
-            LogPrintf("DEBUG-HANG: ActivateBestChain got mempool.cs\n");
+            LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain got mempool.cs\n");
             CBlockIndex* starting_tip = chainActive.Tip();
             bool blocks_connected = false;
             do {
@@ -2931,12 +2931,12 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
 
                 bool fInvalidFound = false;
                 std::shared_ptr<const CBlock> nullBlockPtr;
-                LogPrintf("DEBUG-HANG: Calling ActivateBestChainStep (mostWork=%d)...\n", pindexMostWork ? pindexMostWork->nHeight : -1);
+                LogPrint(BCLog::VALIDATION, "DEBUG-HANG: Calling ActivateBestChainStep (mostWork=%d)...\n", pindexMostWork ? pindexMostWork->nHeight : -1);
                 if (!ActivateBestChainStep(state, pindexMostWork, pblock && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullBlockPtr, fInvalidFound, connectTrace)) {
-                    LogPrintf("DEBUG-HANG: ActivateBestChainStep FAILED\n");
+                    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep FAILED\n");
                     return false;
                 }
-                LogPrintf("DEBUG-HANG: ActivateBestChainStep returned OK\n");
+                LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep returned OK\n");
                 blocks_connected = true;
 
                 if (fInvalidFound) {
@@ -3768,7 +3768,7 @@ static bool IsSpentOnActiveChain(std::unordered_set<COutPoint, SaltedOutpointHas
 static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockIndex** ppindex, const FlatFilePos* dbp) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     AssertLockHeld(cs_main);
-    LogPrintf("DEBUG-HANG: AcceptBlock ENTER block=%s\n", block.GetHash().ToString().substr(0, 16));
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock ENTER block=%s\n", block.GetHash().ToString().substr(0, 16));
 
     CBlockIndex* pindexDummy = nullptr;
     CBlockIndex*& pindex = ppindex ? *ppindex : pindexDummy;
@@ -3779,16 +3779,16 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
     CBlockIndex* pindexPrev = nullptr;
     if (!GetPrevIndex(block, &pindexPrev, state))
         return false;
-    LogPrintf("DEBUG-HANG: AcceptBlock GetPrevIndex OK (prev=%d)\n", pindexPrev ? pindexPrev->nHeight : -1);
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock GetPrevIndex OK (prev=%d)\n", pindexPrev ? pindexPrev->nHeight : -1);
 
     // Block validation via CheckWork (genesis and standard blocks)
     if (block.GetHash() != consensus.hashGenesisBlock && !CheckWork(block, pindexPrev))
         return state.DoS(100, false, REJECT_INVALID);
-    LogPrintf("DEBUG-HANG: AcceptBlock CheckWork OK\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock CheckWork OK\n");
 
     if (!AcceptBlockHeader(block, state, &pindex, pindexPrev))
         return false;
-    LogPrintf("DEBUG-HANG: AcceptBlock AcceptBlockHeader OK (height=%d)\n", pindex ? pindex->nHeight : -1);
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock AcceptBlockHeader OK (height=%d)\n", pindex ? pindex->nHeight : -1);
 
     if (pindex->nStatus & BLOCK_HAVE_DATA) {
         // We already have this exact block (same hash). This is safe to skip.
@@ -3860,7 +3860,7 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
             }
         }
     }
-    LogPrintf("DEBUG-HANG: AcceptBlock MN signature validation complete\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock MN signature validation complete\n");
 
     // MN-only - these checks apply to all blocks
     {
@@ -3930,7 +3930,7 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
 
 
     }
-    LogPrintf("DEBUG-HANG: AcceptBlock fork/double-spend checks complete\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock fork/double-spend checks complete\n");
 
     // Write block to history file
     try {
@@ -3938,22 +3938,22 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
         FlatFilePos blockPos;
         if (dbp != nullptr)
             blockPos = *dbp;
-        LogPrintf("DEBUG-HANG: AcceptBlock calling FindBlockPos...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock calling FindBlockPos...\n");
         if (!FindBlockPos(state, blockPos, nBlockSize + 8, nHeight, block.GetBlockTime(), dbp != nullptr))
             return error("%s : FindBlockPos failed", __func__);
-        LogPrintf("DEBUG-HANG: AcceptBlock FindBlockPos OK, calling WriteBlockToDisk...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock FindBlockPos OK, calling WriteBlockToDisk...\n");
         if (dbp == nullptr)
             if (!WriteBlockToDisk(block, blockPos))
                 return AbortNode(state, "Failed to write block");
-        LogPrintf("DEBUG-HANG: AcceptBlock WriteBlockToDisk OK, calling ReceivedBlockTransactions...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock WriteBlockToDisk OK, calling ReceivedBlockTransactions...\n");
         if (!ReceivedBlockTransactions(block, state, pindex, blockPos))
             return error("%s : ReceivedBlockTransactions failed", __func__);
-        LogPrintf("DEBUG-HANG: AcceptBlock ReceivedBlockTransactions OK\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock ReceivedBlockTransactions OK\n");
     } catch (const std::runtime_error& e) {
         return AbortNode(state, std::string("System error: ") + e.what());
     }
 
-    LogPrintf("DEBUG-HANG: AcceptBlock EXIT success\n");
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock EXIT success\n");
     return true;
 }
 
@@ -3969,18 +3969,18 @@ bool ProcessNewBlock(const std::shared_ptr<const CBlock>& pblock, const FlatFile
         // CheckBlock requires cs_main lock
         LOCK(cs_main);
         CValidationState state;
-        LogPrintf("DEBUG-HANG: ProcessNewBlock ENTER block=%s\n", pblock->GetHash().ToString().substr(0, 16));
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ProcessNewBlock ENTER block=%s\n", pblock->GetHash().ToString().substr(0, 16));
         if (!CheckBlock(*pblock, state)) {
             GetMainSignals().BlockChecked(*pblock, state);
             return error ("%s : CheckBlock FAILED for block %s, %s", __func__, pblock->GetHash().GetHex(), FormatStateMessage(state));
         }
-        LogPrintf("DEBUG-HANG: CheckBlock PASSED\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: CheckBlock PASSED\n");
 
         // Store to disk
         CBlockIndex* pindex = nullptr;
-        LogPrintf("DEBUG-HANG: Calling AcceptBlock...\n");
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: Calling AcceptBlock...\n");
         bool ret = AcceptBlock(*pblock, state, &pindex, dbp);
-        LogPrintf("DEBUG-HANG: AcceptBlock returned %d\n", ret);
+        LogPrint(BCLog::VALIDATION, "DEBUG-HANG: AcceptBlock returned %d\n", ret);
         CheckBlockIndex();
         if (!ret) {
             GetMainSignals().BlockChecked(*pblock, state);
@@ -3990,7 +3990,7 @@ bool ProcessNewBlock(const std::shared_ptr<const CBlock>& pblock, const FlatFile
     }
 
     CValidationState state; // Only used to report errors, not invalidity - ignore it
-    LogPrintf("DEBUG-HANG: Calling ActivateBestChain for height=%d\n", newHeight);
+    LogPrint(BCLog::VALIDATION, "DEBUG-HANG: Calling ActivateBestChain for height=%d\n", newHeight);
     if (!ActivateBestChain(state, pblock))
         return error("%s : ActivateBestChain failed", __func__);
 
