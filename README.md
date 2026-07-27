@@ -54,6 +54,9 @@ printf 'testnet=1\n[test]\naddnode=57.131.33.151\n' > ~/.bathron/bathron.conf
 ./bin/bathron-cli -testnet getblockcount   # syncs to the network tip
 ```
 
+Block explorer: canonical source at
+[bathron-network/bathron-explorer](https://github.com/bathron-network/bathron-explorer).
+
 Verify that the genesis hash above matches before trusting any peer.
 
 ---
