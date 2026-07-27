@@ -15,10 +15,57 @@ if (!headers_sent()) {
 }
 
 // ============ CONFIGURATION ============
-const RPC_HOST = '127.0.0.1';
-const RPC_PORT = 27175;  // BATHRON testnet RPC port
-const RPC_USER = 'testuser';
-const RPC_PASS = 'testpass123';
+// RPC credentials are NEVER stored in this file. They are read from an
+// EnvironmentFile outside the webroot (systemd-style KEY=VALUE), shared with
+// finality-tracker.service. Fail-closed: no config -> maintenance page, no
+// fallback, no defaults for secrets, no detail leaked to the client.
+const RPC_CONFIG_FILE = '/etc/bathron/explorer-rpc.env';
+
+function bathron_rpc_config() {
+    static $cfg = null;
+    if ($cfg !== null) return $cfg;
+    $cfg = false;
+    if (!is_readable(RPC_CONFIG_FILE)) return false;
+    $vals = [];
+    foreach (file(RPC_CONFIG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') continue;
+        $eq = strpos($line, '=');
+        if ($eq === false) continue;
+        $k = trim(substr($line, 0, $eq));
+        $v = trim(substr($line, $eq + 1));
+        if (strlen($v) >= 2 && ($v[0] === '"' || $v[0] === "'") && substr($v, -1) === $v[0]) {
+            $v = substr($v, 1, -1);
+        }
+        $vals[$k] = $v;
+    }
+    if (($vals['BATHRON_RPC_USER'] ?? '') === '' || ($vals['BATHRON_RPC_PASS'] ?? '') === '') {
+        return false;
+    }
+    $cfg = [
+        'user' => $vals['BATHRON_RPC_USER'],
+        'pass' => $vals['BATHRON_RPC_PASS'],
+        'host' => $vals['BATHRON_RPC_HOST'] ?? '127.0.0.1',
+        'port' => (int)($vals['BATHRON_RPC_PORT'] ?? 27175),
+        'dex_url' => $vals['BATHRON_DEX_URL'] ?? '',
+        'state_file' => $vals['BATHRON_STATE_FILE'] ?? '',
+        'genesis_burns' => $vals['BATHRON_GENESIS_BURNS'] ?? '',
+    ];
+    return $cfg;
+}
+
+function bathron_rpc_unavailable() {
+    http_response_code(503);
+    header('Retry-After: 60');
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+       . '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+       . '<meta http-equiv="refresh" content="60"><title>BATHRON Explorer</title></head>'
+       . '<body style="font-family:sans-serif;background:#0d1117;color:#e6edf3;'
+       . 'display:flex;align-items:center;justify-content:center;min-height:100vh">'
+       . '<p>Explorer data temporarily unavailable. Please try again shortly.</p>'
+       . '</body></html>';
+    exit;
+}
 
 const COIN_NAME = 'BATHRON';
 const COIN_TICKER = 'sats';  // Base money (Genesis Clean terminology)
@@ -102,7 +149,11 @@ class BATHRONExplorer
     private static function getRpc()
     {
         if (self::$rpc === null) {
-            self::$rpc = new Bitcoin(RPC_USER, RPC_PASS, RPC_HOST, RPC_PORT);
+            $cfg = bathron_rpc_config();
+            if ($cfg === false) {
+                bathron_rpc_unavailable();
+            }
+            self::$rpc = new Bitcoin($cfg['user'], $cfg['pass'], $cfg['host'], $cfg['port']);
         }
         return self::$rpc;
     }
@@ -400,14 +451,13 @@ class BATHRONExplorer
 
         // Try to read from genesis_burns.json (multiple locations)
         // NOTE: genesis_burns_spv.json removed - daemon-only flow uses burnclaimdb
-        $paths = [
-            '/home/ubuntu/explorer/genesis_burns.json',             // Explorer dir (deployed)
-            '/home/ubuntu/.bathron/testnet5/genesis_burns.json',    // Daemon datadir
-            '/home/ubuntu/genesis_burns.json',                      // Server deployment
-            __DIR__ . '/genesis_burns.json',                        // Same dir as explorer
-            __DIR__ . '/../../contrib/testnet/genesis_burns.json',
-            '/home/ubuntu/BATHRON/contrib/testnet/genesis_burns.json',
-        ];
+        $cfgPaths = bathron_rpc_config();
+        $paths = array_filter([
+            ($cfgPaths !== false ? ($cfgPaths['genesis_burns'] ?? '') : ''), // env override
+            __DIR__ . '/genesis_burns.json',                        // Same dir as explorer (deployed)
+            dirname(__DIR__) . '/genesis_burns.json',               // Parent of install dir
+            __DIR__ . '/../../contrib/testnet/genesis_burns.json',  // In-repo layout
+        ]);
 
         foreach ($paths as $path) {
             if (file_exists($path)) {
@@ -444,7 +494,10 @@ class BATHRONExplorer
      */
     public static function getFinalityTrack()
     {
-        $path = '/home/ubuntu/explorer-state/finality.json';
+        $cfgState = bathron_rpc_config();
+        $path = ($cfgState !== false && ($cfgState['state_file'] ?? '') !== '')
+            ? $cfgState['state_file']
+            : dirname(__DIR__) . '/explorer-state/finality.json';
         $default = ['lag' => 0, 'status' => 'unknown', 'tip' => 0, 'updated' => 0, 'blocks' => []];
         if (is_readable($path)) {
             $j = json_decode(file_get_contents($path), true);
@@ -2305,7 +2358,9 @@ try {
                 <a href="?tab=operators" class="nav-tab <?= $page === 'operators' ? 'active' : '' ?>">Operators</a>
                 <a href="?tab=masternodes" class="nav-tab <?= $page === 'masternodes' ? 'active' : '' ?>">Nodes</a>
                 <a href="?tab=join" class="nav-tab <?= $page === 'join' ? 'active' : '' ?>" style="color: var(--accent);">Join</a>
-                <a href="https://dex.example/" class="nav-tab" target="_blank" style="color: var(--accent);">DEX ↗</a>
+<?php $dexCfg = bathron_rpc_config(); $dexUrl = ($dexCfg !== false) ? $dexCfg['dex_url'] : ''; if ($dexUrl !== ''): ?>
+                <a href="<?= htmlspecialchars($dexUrl) ?>" class="nav-tab" target="_blank" style="color: var(--accent);">DEX ↗</a>
+<?php endif; ?>
             </nav>
         </div>
     </header>

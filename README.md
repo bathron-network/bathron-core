@@ -46,11 +46,12 @@ Only the public seed is needed to join — no RPC access and no operator address
 ```bash
 mkdir -p ~/.bathron
 printf 'testnet=1\n[test]\naddnode=57.131.33.151\n' > ~/.bathron/bathron.conf
-./src/bathrond -testnet -daemon
-./src/bathron-cli -testnet getblockhash 0
+# release package: binaries are in bin/ — from a source build they are in src/
+./bin/bathrond -testnet -daemon
+./bin/bathron-cli -testnet getblockhash 0
 # expected genesis:
 # 0d241620b8beb492fd21bd8a92295260a4afa1b82e1bd816d18323cc3c98ea71
-./src/bathron-cli -testnet getblockcount   # syncs to the network tip
+./bin/bathron-cli -testnet getblockcount   # syncs to the network tip
 ```
 
 Verify that the genesis hash above matches before trusting any peer.
