@@ -16,10 +16,10 @@ DATA_DIR="$HOME/.bathron"
 SRC_DIR="$HOME/bathron-src"
 PROGRESS_FILE="/tmp/m1_install_progress.txt"
 
-REPO_URL="${BATHRON_REPO_URL:-https://github.com/AdonisPhusis/BATHRON.git}"
+REPO_URL="${BATHRON_REPO_URL:-https://github.com/bathron-network/bathron-core.git}"
 # Optional: a published release with prebuilt linux-x86_64 bathrond/bathron-cli.
 # Leave empty to always build from source.
-RELEASE_URL="${BATHRON_RELEASE_URL:-https://github.com/AdonisPhusis/BATHRON/releases/download/v0.9.0-testnet}"
+RELEASE_URL="${BATHRON_RELEASE_URL:-https://github.com/bathron-network/bathron-core/releases/download/v0.9.3-public-testnet}"
 
 # Testnet RPC port (migrated to the 2717x family 2026-07-12; was PIVX-derived 51475).
 RPC_PORT=27175
