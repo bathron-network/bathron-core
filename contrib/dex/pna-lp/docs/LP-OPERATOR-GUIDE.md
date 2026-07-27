@@ -30,7 +30,8 @@ In single-LP mode, one LP handles both legs. In per-leg mode, two independent LP
 ```bash
 # 1. Clone the LP code
 cd ~
-git clone https://github.com/AdonisPhusis/PNA-LP.git pna-lp
+git clone https://github.com/bathron-network/bathron-core.git
+cd bathron-core/contrib/dex/pna-lp
 cd pna-lp
 
 # 2. Create virtual environment
