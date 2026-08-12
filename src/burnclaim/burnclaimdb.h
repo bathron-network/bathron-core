@@ -209,4 +209,62 @@ bool CheckBurnClaimDBConsistency(const uint256& chainTipHash, bool& fRequireRebu
 
 // NOTE: EnsureGenesisBurnsInDB() REMOVED - unified genesis flow uses TX_BURN_CLAIM at Block 1
 
+
+// ============================================================================
+// Burn-claim state machine (AUD-017: batch-scoped, caller commits)
+// ============================================================================
+// Declared here rather than in burnclaim.h because they take
+// CBurnClaimDB::Batch&, and burnclaim.h cannot include this header back.
+// NONE of these write through to LevelDB: every mutation is staged into the
+// caller's batch, which is committed once, only after the whole block has
+// validated. A block that fails leaves burnclaimdb byte-identical.
+
+/**
+ * Connect TX_MINT_M0BTC - apply finalization to DB.
+ *
+ * Called when block containing TX_MINT_M0BTC is connected.
+ * - Sets status = FINAL for each claim
+ * - Increments M0BTC supply counter
+ *
+ * @param tx The mint transaction
+ * @param blockHeight Height of block
+ */
+bool ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight, CBurnClaimDB::Batch& batch);
+
+/**
+ * Disconnect TX_MINT_M0BTC - revert finalization (reorg).
+ *
+ * Called when block containing TX_MINT_M0BTC is disconnected.
+ * - Sets status = PENDING for each claim
+ * - Decrements M0BTC supply counter
+ *
+ * @param tx The mint transaction
+ * @param blockHeight Height of block
+ */
+bool DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight, CBurnClaimDB::Batch& batch);
+
+/**
+ * Enter PENDING state for a burn claim.
+ *
+ * Called when TX_BURN_CLAIM is mined.
+ *
+ * @param payload The burn claim payload
+ * @param bathronHeight Height of BATHRON block containing TX_BURN_CLAIM
+ * @return true if successful
+ */
+bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight, CBurnClaimDB::Batch& batch);
+
+/**
+ * Undo burn claim (BATHRON reorg disconnecting TX_BURN_CLAIM).
+ *
+ * ONLY removes the PENDING claim record.
+ * Does NOT touch M0BTC_supply or claimed markers (that's DisconnectMintM0BTC).
+ *
+ * @param payload The burn claim payload
+ * @param height Height of block being disconnected
+ * @return true if successful
+ */
+bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height, CBurnClaimDB::Batch& batch);
+
+
 #endif // BATHRON_BURNCLAIMDB_H

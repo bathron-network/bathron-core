@@ -37,7 +37,21 @@ void InitKillSwitch();
 /**
  * Check if BTC burns are currently enabled.
  *
- * CONSENSUS FUNCTION - Used in CheckBurnClaim() and CheckMintM0BTC().
+ * NODE-LOCAL POLICY, NOT CONSENSUS (the old comment claiming "CONSENSUS FUNCTION —
+ * used in CheckBurnClaim() and CheckMintM0BTC()" was FALSE and is the exact class
+ * of confusion behind AUD-003). This flag is read in exactly three places, none of
+ * them a validation path:
+ *   1. AcceptToMemoryPool — refuse to accept/relay/mine NEW TX_BURN_CLAIM;
+ *   2. MintPolicyAllowsProduction (producer side) — refuse to BUILD a mint;
+ *   3. the getburnstatus/setbtcburnsenabled RPCs — display only.
+ * It is NEVER read on a block-validation path: CheckBurnClaim, CheckMintM0BTC and
+ * the consensus oracle CreateExpectedMintM0BTC are all flag-blind (LOT 2), so
+ * differing kill-switch states across operators can never fork the chain.
+ *
+ * ⚠ CONSEQUENCE OF LOT 2, know it before flipping this in production: consensus now
+ * always requires the due mint, so a FLEET-WIDE kill switch does not "pause minting"
+ * — every producer refuses to assemble and block production STOPS until the flag is
+ * restored. Partial activation is survivable (other operators keep producing).
  *
  * @return true if burns are enabled, false if kill switch is active
  */

@@ -7,6 +7,8 @@
 #include "arith_uint256.h"
 #include "chain.h"
 #include "chainparams.h"
+#include "masternode/blockproducer.h"   // LOT 9 M3: ResolveEpochOperatorSets
+#include "validation.h"                 // cs_main (epoch resolution asserts it)
 
 #include <algorithm>
 #include <map>
@@ -43,6 +45,57 @@ uint256 GetHuFinalitySeedHash(const CBlockIndex* pindex, int nSeedOffset)
 // ═══════════════════════════════════════════════════════════════════════════════
 // OPERATOR-BASED QUORUM (v3.0)
 // ═══════════════════════════════════════════════════════════════════════════════
+
+std::map<CPubKey, CDeterministicMNCPtr> GetEpochFinalityOperators(const CBlockIndex* pindexPrev)
+{
+    // LOT 9 M3 (spec O-2): finalitySet == productionSet of the epoch snapshot —
+    // confirmed/bootstrap identities whose lease is VALID at the snapshot height.
+    // N (and therefore the threshold) tracks THIS set: leases expiring drop N at
+    // the next epoch boundary; if N falls below nHuQuorumSize finality STALLS
+    // fail-closed while production continues through the recovery permutation,
+    // and it restarts automatically once renewals bring N back to the floor.
+    std::map<CPubKey, CDeterministicMNCPtr> operators;
+    if (!pindexPrev || !deterministicMNManager) {
+        return operators;
+    }
+
+    const Consensus::Params& consensus = Params().GetConsensus();
+    const int nHeight = pindexPrev->nHeight + 1;
+    if (nHeight < consensus.DMMScheduleActivationHeight()) {
+        // BOOTSTRAP MODE (LOT 9 M3.1) — the explicitly-defined regime below the
+        // activation height, where production itself is exempt from the schedule.
+        // The population is the legacy bootstrap-aware parent-list set, so a fresh
+        // chain finalizes from its first blocks. This is NOT a "first epoch"
+        // exception to the schedule: above the activation height the anchored
+        // snapshot is the ONLY source, with no fallback of any kind.
+        return GetUniqueOperators(deterministicMNManager->GetListForBlock(pindexPrev));
+    }
+
+    mn_consensus::EpochOperatorSets sets;
+    mn_consensus::ScheduleStatus status;
+    {
+        // cs_main is recursive; several callers (context build at connect, cold
+        // paths) already hold it, gossip-side cold paths do not.
+        LOCK(cs_main);
+        status = mn_consensus::ResolveEpochOperatorSets(pindexPrev, sets);
+    }
+    if (status != mn_consensus::ScheduleStatus::OK) {
+        // DEFERRED / NO_SIGNER / FATAL-shaped local gaps: FAIL-CLOSED (empty set →
+        // threshold falls back to ceil(2/3·E), unreachable). A finality/gossip read
+        // must never fire the fatal latch — only the consensus validation sites do.
+        return operators;
+    }
+
+    for (const uint256& proTxHash : sets.production) {
+        auto it = sets.byProTx.find(proTxHash);
+        if (it == sets.byProTx.end()) continue;
+        const CPubKey& opKey = it->second->pdmnState->pubKeyOperator;
+        if (operators.find(opKey) == operators.end()) {
+            operators[opKey] = it->second;
+        }
+    }
+    return operators;
+}
 
 std::map<CPubKey, CDeterministicMNCPtr> GetUniqueOperators(const CDeterministicMNList& mnList)
 {
@@ -117,6 +170,46 @@ int HuActiveFinalityThreshold(const Consensus::Params& consensus, int nOperators
     // to thousands with no retuning. nOperators<=0 (block unresolved) falls back to E
     // (conservative: a high threshold that is never trivially met — never 0).
     const int E = consensus.nHuExpectedCommitteeSize;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AUD-002 (LOT 4) — SYBIL FLOOR, applied HERE and only here.
+    //
+    // Before this lot `nHuQuorumSize` had exactly ONE non-logging use in the whole
+    // tree (state/signaling.cpp inside HasQuorum), which is on no block-validity
+    // path and is OR-bypassed by two floor-free fallbacks. Every finality predicate
+    // that DOES gate validity derived its bar from this function, which had no
+    // floor — so a population below the 3f+1 floor could finalize. At N=1 the
+    // threshold is 1: a single operator finalizes alone, and its equivocation
+    // finalizes two conflicting blocks on two honest nodes — a permanent fork.
+    //
+    // The floor is placed in the THRESHOLD DERIVATION (remediation option 1)
+    // rather than at the call sites because BOTH the write side
+    // (CFinalityManagerHandler::AddSignature) and the read side
+    // (CFinalityManagerDB::IsBlockFinal, HasFinality) re-derive through here. A
+    // guard on one side alone would leave historical records honoured on read —
+    // exactly the grandfathering hole the finding warns about.
+    //
+    // Semantics below the floor: NOT "threshold 0" and NOT "threshold = N" but
+    // UNREACHABLE — no achievable unique-operator count can satisfy it, so such a
+    // block is simply never final. That is the intended consequence: a network
+    // legitimately running below the floor STOPS FINALIZING (it keeps producing;
+    // liveness of block production is untouched). Deploy only with a confirmed
+    // >= nHuQuorumSize operator population.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (nOperators > 0 && nOperators < consensus.nHuQuorumSize) {
+        return HU_FINALITY_THRESHOLD_UNREACHABLE;
+    }
+    // DELIBERATE, AND A KNOWN RESIDUAL: the guard is `nOperators > 0`, so an
+    // UNRESOLVED block (HuFinalityOperatorCount returns 0 when the block is absent
+    // from mapBlockIndex or has no cached context) does NOT get the floor — it falls
+    // through to the pre-existing conservative fallback of ceil(2/3·E). AUD-002 names
+    // this fail-open ("an unknown block skips the floor check"). It is not closed
+    // here because at shipped params the fallback threshold is ceil(2/3·128) = 86,
+    // far ABOVE nHuQuorumSize = 4, so an unresolved block is harder to finalize than
+    // a resolved one, not easier. That safety comes from E, not from the floor — if
+    // E were ever lowered near nHuQuorumSize this must be revisited. Recorded as a
+    // follow-up rather than silently relied upon.
+
     int eff = (nOperators > 0) ? std::min(E, nOperators) : E;
     if (eff < 1) eff = 1;
     return HuVrfFinalityThreshold(eff);
@@ -128,6 +221,10 @@ bool IsOperatorVrfSelected(
     const CPubKey& vrfPubKey,
     const vrf::Proof& proof)
 {
+    // LOT 9 M3: N no longer comes from the caller's list — the epoch snapshot is
+    // the single source (below). The list parameter is kept for interface
+    // stability of existing callers/tests; it carries no authority here.
+    (void)mnList;
     if (!pindex || !vrfPubKey.IsValid() || vrfPubKey.size() != vrf::PUBKEY_SIZE) {
         return false;
     }
@@ -142,7 +239,9 @@ bool IsOperatorVrfSelected(
         return false;  // unverifiable claim → never selected
     }
 
-    const int N = static_cast<int>(GetUniqueOperators(mnList).size());
+    // LOT 9 M3: N = the epoch snapshot's lease-valid population — identical to the
+    // context-based verify path (ValidateSignatureFromContext) and the signer side.
+    const int N = static_cast<int>(GetEpochFinalityOperators(pindex->pprev).size());
     const int E = consensus.nHuExpectedCommitteeSize;
     return IsVrfSelected(output, E, N);
 }

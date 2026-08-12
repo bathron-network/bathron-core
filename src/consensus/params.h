@@ -7,6 +7,7 @@
 #define BATHRON_CONSENSUS_PARAMS_H
 
 #include "amount.h"
+#include "btcspv/btcsourcenet.h"
 #include "optional.h"
 #include "uint256.h"
 #include <map>
@@ -33,7 +34,8 @@ enum UpgradeIndex : uint32_t {
     UPGRADE_V7_0,        // OP_TEMPLATEVERIFY (CTV-lite covenants)
     UPGRADE_BTCHEADERS_REORG, // Work-based BTC reorg in consensus header chain (BP-BTCHEADERS-REORG)
     UPGRADE_M1_RECEIPT_PROTECTED, // M1 receipt consensus protection: bearer receipt only spendable by reconciling settlement tx (option B)
-    UPGRADE_POSE_PRODUCER_DECAY, // PoSe decay only for the successful block producer (legacy every-block decay made the 3-strike ban unreachable)
+    // LOT 9 M2: UPGRADE_POSE_PRODUCER_DECAY removed — the temporal-PoSe system it
+    // gated (missed-slot penalty/ban derived from block.nTime) is gone entirely.
     UPGRADE_BTCSTATE,    // OP_BTCSTATEVERIFY (A1 - BTC header facts in script) + btcheaders max-reorg-depth (R7)
     UPGRADE_CSFS,        // OP_CHECKSIGFROMSTACK (verify sig over arbitrary message - oracles/delegation)
     UPGRADE_CSV,         // OP_CHECKSEQUENCEVERIFY (BIP112) + BIP68 relative lock-times
@@ -107,12 +109,17 @@ struct Params {
     int nHuLeaderTimeoutSeconds;    // Timeout before fallback to next MN (45s mainnet)
     int nHuFallbackRecoverySeconds; // Recovery window for fallback MNs (15s testnet/mainnet)
 
-    // DMM Bootstrap phase - special rules for cold start
+    // DMM Bootstrap phase - special rules for cold start.
     // During bootstrap (height <= nDMMBootstrapHeight):
-    // - Producer = always primary (scores[0]), no fallback slot calculation
-    // - nTime = max(prevTime + 1, nNow) instead of slot-aligned time
-    // This prevents timestamp issues when syncing a fresh chain from genesis
-    int nDMMBootstrapHeight;        // Bootstrap phase height (5 testnet, 10 mainnet)
+    // - no producer check at all (blocks are launcher-mined via generatebootstrap)
+    // - MNs registered in this window are trusted WITHOUT collateral confirmation
+    // This prevents timestamp issues when syncing a fresh chain from genesis.
+    //
+    // LOT 9 M3.1 — this height is ALSO the schedule's anchor (see
+    // DMMScheduleActivationHeight below), so it must be >= the measured minimal
+    // launch path (genesis -> burn -> K_FINALITY -> mint -> collateral funding ->
+    // registrations). Measurement: doc/LOT9-M31-ACTIVATION-MEASUREMENT.md.
+    int nDMMBootstrapHeight;        // Bootstrap phase height (250 main/testnet, 2 regtest)
 
     // Reorg protection
     int nHuMaxReorgDepth;           // Max reorg depth before finality (12 mainnet)
@@ -144,6 +151,14 @@ struct Params {
     uint32_t burnScanBtcHeightStart{0};  // First BTC block height to scan for genesis burns
     uint32_t burnScanBtcHeightEnd{0};    // Last BTC block height to scan for genesis burns (inclusive)
 
+    // The Bitcoin network this BATHRON chain reads as its monetary source.
+    // A CONSENSUS parameter: committed here (and thus at BATHRON genesis),
+    // never changeable by any runtime flag. Mapping: BATHRON mainnet →
+    // BITCOIN_MAINNET; BATHRON testnet (measurement network) →
+    // BITCOIN_TESTNET4; regtest → BITCOIN_MAINNET (explicit fixture choice —
+    // the P0 regtest vectors are built against mainnet BTC params).
+    BtcSourceNet btcSourceNet{BtcSourceNet::BITCOIN_MAINNET};
+
     // Accessor for the genesis burn-scan BTC height window (consumed by buildblock1)
     std::pair<uint32_t, uint32_t> GetBurnScanBtcHeightRange() const { return {burnScanBtcHeightStart, burnScanBtcHeightEnd}; }
 
@@ -165,7 +180,6 @@ struct Params {
     // valid only if its value flows to that owner (destination covenant). Kills
     // the ownerless bearer-fee front-run without touching the tx format.
     bool IsFeeReceiptPinned(const int nHeight) const { return NetworkUpgradeActive(nHeight, UPGRADE_FEE_RECEIPT_PINNED); }
-    bool IsPoSeProducerDecay(const int nHeight) const { return NetworkUpgradeActive(nHeight, UPGRADE_POSE_PRODUCER_DECAY); }
     // NOTE: the UPGRADE_HU_VRF_SORTITION gate was removed — HU finality is VRF-only
     // (ECVRF sortition is the unconditional committee mechanism, no legacy top-N path
     // and no activation flag). The VRF-module audit is a pre-mainnet PROCESS gate.
@@ -176,6 +190,33 @@ struct Params {
     // Prevents rapid MN registration/deregistration attacks on quorum
     // Values are set per-network in chainparams.cpp
     // ═══════════════════════════════════════════════════════════════════════════
+    // LOT 9 M1 — non-grindable DMM schedule (architecture B).
+    int nDMMScheduleEpochLength{60};   //!< epoch length in blocks (schedule reshuffle + set refresh)
+    int nDMMSetSnapshotDepth{30};      //!< depth BELOW the epoch start at which the operator set freezes
+    /**
+     * LOT 9 M3.1 — THE schedule anchor. Below it the chain is in BOOTSTRAP MODE
+     * (launcher-mined blocks, no producer check); from it on, the epoch schedule
+     * governs and every epoch has ONE immutable snapshot:
+     *
+     *   epochIndex    = (height - activation) / nDMMScheduleEpochLength
+     *   epochStart    = activation + epochIndex * nDMMScheduleEpochLength
+     *   snapshotHeight= max(activation - 1, epochStart - nDMMSetSnapshotDepth)
+     *
+     * DERIVED, not a separate parameter, and that is a deliberate decision:
+     * `activation - 1 == nDMMBootstrapHeight` is the ONLY anchor at which every
+     * launch registration is eligible without waiting nMasternodeCollateralMinConf
+     * (1440 blocks on mainnet) — registrations at or below nDMMBootstrapHeight are
+     * bootstrap-trusted, later ones are not. A separate knob could drift away from
+     * that height and would silently reintroduce either a window with no schedule
+     * or a snapshot whose operators are not yet eligible. One frontier, one meaning.
+     */
+    int DMMScheduleActivationHeight() const { return nDMMBootstrapHeight + 1; }
+
+    // LOT 9 M3 — operator lease (objective liveness declaration, spec §C).
+    // leaseExpiryHeight = inclusionHeight + nOperatorLeaseBlocks, derived by CONSENSUS
+    // (never user-supplied). Canonical per-network values live in chainparams.cpp.
+    int nOperatorLeaseBlocks{10080};   //!< ~7 days at 60 s spacing
+
     int nMasternodeCollateralMinConf{1};  // Default, overridden per network
 
     int MasternodeCollateralMinConf() const { return nMasternodeCollateralMinConf; }

@@ -138,26 +138,26 @@ BOOST_AUTO_TEST_CASE(min_supported_height_comes_from_db)
 // =============================================================================
 BOOST_AUTO_TEST_CASE(network_specific_min_heights)
 {
-    // Document expected checkpoint-based min heights for each network
-    // These are written to DB_MIN_HEIGHT at SPV init
-    //
-    // NOTE: We use >= rather than == to allow checkpoint updates
-    // without breaking tests. The important invariant is that
-    // min_supported_height is reasonable for the network.
+    // min_supported_height comes from the genesis checkpoint of the COMMITTED
+    // source network's table (btcspv.cpp) and is persisted to DB at first init
+    // via the DB_MIN_HEIGHT key. Assert the real tables, not literals copied
+    // into the test:
 
-    // Signet: First checkpoint should be >= 200000 (reasonable for 2024+)
-    const uint32_t SIGNET_EXPECTED_MIN = 200000;
+    // Testnet4 (measurement network): pin at the retarget boundary 145152.
+    const auto& t4 = GetBtcTestnet4Checkpoints();
+    BOOST_REQUIRE(!t4.empty());
+    BOOST_CHECK_EQUAL(GetBtcTestnet4Params().genesisCheckpointHeight, 145152U);
+    bool t4HasPin = false;
+    for (const auto& cp : t4) t4HasPin |= (cp.height == 145152);
+    BOOST_CHECK(t4HasPin);
 
-    // Mainnet: First checkpoint should be >= 800000 (reasonable for 2024+)
-    const uint32_t MAINNET_EXPECTED_MIN = 800000;
-
-    // These are documentation tests - they verify the expected range
-    // If checkpoints are updated, the actual values may be higher
-    BOOST_CHECK_GE(SIGNET_EXPECTED_MIN, 100000U);   // Sanity: not too low
-    BOOST_CHECK_GE(MAINNET_EXPECTED_MIN, 700000U);  // Sanity: not too low
-
-    // Document that min_supported_height comes from btcspv.cpp checkpoint arrays
-    // and is persisted to DB at first init via DB_MIN_HEIGHT key
+    // Mainnet (future public network): pin at 800000.
+    const auto& mn = GetBtcMainnetCheckpoints();
+    BOOST_REQUIRE(!mn.empty());
+    BOOST_CHECK_EQUAL(GetBtcMainnetParams().genesisCheckpointHeight, 800000U);
+    bool mnHasPin = false;
+    for (const auto& cp : mn) mnHasPin |= (cp.height == 800000);
+    BOOST_CHECK(mnHasPin);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

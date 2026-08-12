@@ -217,6 +217,35 @@ void ShutdownHuFinality();
 bool WouldViolateHuFinality(const CBlockIndex* pindexNew, const CBlockIndex* pindexFork);
 
 /**
+ * LOT 6 (AUD-012 / L4-F1) — LOCAL finality view predicates for chain SELECTION.
+ *
+ * These answer "does THIS NODE's finality view refuse activating this chain?".
+ * They are LOCAL POLICY, never consensus validity: the view behind them is
+ * gossip-fed, not reconstructible from blocks, and wiped on -reindex (LOT 1), so
+ * their answer MUST NOT write BLOCK_FAILED_VALID or any persistent status. They
+ * are consumed by ActivateBestChain's candidate filter, which skips (call-scoped
+ * eviction, RAII re-insertion) a refused candidate instead of failing activation.
+ *
+ * BlockHasLocalFinality is deliberately the UNION of the in-memory handler and
+ * the finality DB: it must be at least as broad as EVERY downstream backstop
+ * (DisconnectTip checks the handler; WouldViolateHuFinality checks the DB). A
+ * filter narrower than a backstop would admit a candidate the backstop then
+ * refuses on every retry — the exact spin this design removes.
+ */
+bool BlockHasLocalFinality(const CBlockIndex* pindex);
+
+/**
+ * True if activating `pindexCandidate` (fork point `pindexFork`, from
+ * chainActive.FindFork) is refused by the local finality view:
+ *  - disconnect side: some active block in (fork, tip] has local finality;
+ *  - connect side: some block in (fork, candidate] conflicts with a height the
+ *    local view holds finalized to a DIFFERENT hash (the gossiped finality can
+ *    precede the blocks, so the tip may be BELOW the finalized height).
+ * Pure in (candidate, fork, current view); requires cs_main.
+ */
+bool LocalFinalityRefusesChain(const CBlockIndex* pindexCandidate, const CBlockIndex* pindexFork);
+
+/**
  * Unique-operator population AT the block identified by `blockHash`, resolved
  * deterministically from that block's OWN MN list (GetUniqueOperators over
  * GetListForBlock(pindex->pprev)) — the exact N the VRF selection uses. This is the

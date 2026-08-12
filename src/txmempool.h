@@ -552,10 +552,11 @@ public:
     void removeForReorg(const CCoinsViewCache* pcoins, unsigned int nMemPoolHeight, int flags);
     // F-HTLC-2 rollover-liveness: evict special txs that a HEIGHT-MONOTONIC-
     // TIGHTENING consensus rule now rejects permanently at nMemPoolHeight (they
-    // were valid for an earlier block but can never become valid again). Only
-    // such permanently-invalid txs (and their descendants) are removed —
-    // premature/loosening special txs are untouched. See
-    // IsSpecialTxHeightPermanentlyInvalid.
+    // were valid for an earlier block but can never become valid again). LOT 9
+    // final: also covers the STATE-monotonic case — an operator lease renewal
+    // whose sequence the chain has already consumed. Only such permanently-
+    // invalid txs (and their descendants) are removed — premature/loosening
+    // special txs are untouched. See IsSpecialTxHeightPermanentlyInvalid.
     void removeForSpecialTxHeightChange(const CCoinsViewCache& view, unsigned int nMemPoolHeight);
     void removeWithAnchor(const uint256& invalidRoot);
     void removeConflicts(const CTransaction& tx);
@@ -748,6 +749,13 @@ private:
     void removeProTxSpentCollateralConflicts(const CTransaction &tx);
     void removeProTxConflicts(const CTransaction &tx);
 
+public:
+    /** LOT 9 final — after a lease-state change for proTxHash, evict every in-pool
+     *  TX_OPERATOR_LEASE for it whose sequence != nKeepSequence (the single live
+     *  one, current+1), except skipTxHash. Called on block connect (via
+     *  removeProTxConflicts) and by the reorg resurrection path in validation. */
+    void removeOperatorLeasesOtherThan(const uint256& proTxHash, uint32_t nKeepSequence,
+                                       const uint256& skipTxHash, MemPoolRemovalReason reason);
 };
 
 /**

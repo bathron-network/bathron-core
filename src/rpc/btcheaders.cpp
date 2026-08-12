@@ -180,6 +180,9 @@ UniValue getbtcheadersstatus(const JSONRPCRequest& request)
 
     result.pushKV("db_initialized", true);
 
+    // The consensus-committed Bitcoin source network (never a runtime flag).
+    result.pushKV("btc_source", BtcSourceNetToString(Params().GetConsensus().btcSourceNet));
+
     // Get btcheadersdb stats
     auto stats = g_btcheadersdb->GetStats();
     result.pushKV("tip_height", (int)stats.tipHeight);
@@ -342,8 +345,10 @@ UniValue publishbtcheaders(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to sign payload");
     }
 
-    // Verify signature (sanity check)
-    if (!payload.VerifySignature()) {
+    // Verify signature (sanity check). AUD-001 (LOT 5): explicit list. RPC/telemetry
+    // path building a tx from the caller's own key — tip semantics are correct and
+    // now stated. No block verdict depends on this.
+    if (!payload.VerifySignature(deterministicMNManager->GetListAtChainTip())) {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Signature verification failed (internal error)");
     }
 

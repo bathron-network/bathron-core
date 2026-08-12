@@ -47,13 +47,19 @@ void CacheBlockFinalityContext(const CBlockIndex* pindex)
     // resolve the block index again.
     ctx.vrfSeed = GetHuFinalitySeedHash(pindex, consensus.nHuFinalitySeedOffset);
     mnList.ForEachMN(true /* onlyValid */, [&](const CDeterministicMNCPtr& dmn) {
+        // Key-resolution maps stay FULL-list (any signer's keys must be resolvable);
+        // only the ELIGIBILITY set below decides who counts.
         ctx.operatorByProTx[dmn->proTxHash] = dmn->pdmnState->pubKeyOperator;
         ctx.vrfByProTx[dmn->proTxHash] = dmn->pdmnState->pubKeyVRF;
-        // Same bootstrap-aware eligibility as GetUniqueOperators (quorum.cpp).
-        const bool isBootstrapMN = (dmn->pdmnState->nRegisteredHeight <= consensus.nDMMBootstrapHeight);
-        if (!isBootstrapMN && dmn->pdmnState->confirmedHash.IsNull()) return;
-        ctx.eligibleOperators.insert(dmn->pdmnState->pubKeyOperator);
     });
+    // LOT 9 M3 (spec O-2): the finality population is the epoch snapshot's
+    // productionSet (lease-valid) — THE single N source, shared with the signer
+    // side and the threshold. Bootstrap fallback and fail-closed gaps live inside
+    // GetEpochFinalityOperators.
+    for (const auto& [opKey, dmn] : GetEpochFinalityOperators(pprev)) {
+        (void)dmn;
+        ctx.eligibleOperators.insert(opKey);
+    }
     ctx.valid = true;
 
     LOCK(cs_finalityCtx);
@@ -159,10 +165,19 @@ size_t CFinalityManager::GetUniqueOperatorCount() const
     }
 
     // Numerator/denominator symmetry: only count signers whose operator is in the
-    // SAME bootstrap-aware eligible set that defines N (HuFinalityOperatorCount →
-    // GetUniqueOperators). Otherwise a post-bootstrap, not-yet-confirmed MN could be
-    // counted toward finality while being excluded from the threshold's N.
-    const auto eligibleOps = GetUniqueOperators(mnList);  // bootstrap-aware, keyed by pubKeyOperator
+    // SAME eligible set that defines N (HuFinalityOperatorCount →
+    // GetEpochFinalityOperators — LOT 9 M3: the epoch snapshot's lease-valid
+    // productionSet). Otherwise an expired/unconfirmed operator could be counted
+    // toward finality while being excluded from the threshold's N.
+    const CBlockIndex* pprevForOps = nullptr;
+    {
+        LOCK(cs_main);
+        auto itIdx = mapBlockIndex.find(blockHash);
+        if (itIdx != mapBlockIndex.end() && itIdx->second) {
+            pprevForOps = itIdx->second->pprev ? itIdx->second->pprev : itIdx->second;
+        }
+    }
+    const auto eligibleOps = GetEpochFinalityOperators(pprevForOps);
 
     std::set<CPubKey> uniqueOperators;
     for (const auto& [proTxHash, sig] : mapSignatures) {
@@ -327,8 +342,10 @@ int HuFinalityOperatorCount(const uint256& blockHash)
         return 0;
     }
     const CBlockIndex* pprev = pindex->pprev ? pindex->pprev : pindex;
-    CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pprev);
-    return static_cast<int>(GetUniqueOperators(mnList).size());
+    // LOT 9 M3: N = the epoch snapshot's lease-valid operator population — the
+    // same set the cached context, the signer-side sortition and the signature
+    // counting use.
+    return static_cast<int>(GetEpochFinalityOperators(pprev).size());
 }
 
 bool WouldViolateHuFinality(const CBlockIndex* pindexNew, const CBlockIndex* pindexFork)
@@ -346,6 +363,64 @@ bool WouldViolateHuFinality(const CBlockIndex* pindexNew, const CBlockIndex* pin
             return true;
         }
         pindex = pindex->pprev;
+    }
+
+    return false;
+}
+
+bool BlockHasLocalFinality(const CBlockIndex* pindex)
+{
+    if (!pindex || !pindex->phashBlock) {
+        return false;
+    }
+    const uint256& hash = pindex->GetBlockHash();
+    // UNION of both authorities, deliberately (see finality.h): the in-memory
+    // handler and the DB can disagree transiently (restart rebuilds the handler
+    // from the DB; a signature reaching threshold updates both but under
+    // different locks). The selection filter must refuse whenever ANY downstream
+    // backstop would, or the backstop re-fires on every retry.
+    if (finalityHandler && finalityHandler->HasFinality(pindex->nHeight, hash)) {
+        return true;
+    }
+    if (pFinalityDB && pFinalityDB->IsBlockFinal(hash)) {
+        return true;
+    }
+    return false;
+}
+
+bool LocalFinalityRefusesChain(const CBlockIndex* pindexCandidate, const CBlockIndex* pindexFork)
+{
+    if (!pindexCandidate) {
+        return false;
+    }
+
+    // Disconnect side: activating the candidate disconnects (fork, tip]. Refuse if
+    // any of those blocks has local finality. Walks chainActive like
+    // WouldViolateHuFinality, but through the UNION predicate (see finality.h).
+    for (const CBlockIndex* pindex = chainActive.Tip();
+         pindex && pindex != pindexFork; pindex = pindex->pprev) {
+        if (BlockHasLocalFinality(pindex)) {
+            LogPrint(BCLog::STATE, "Quorum Finality: candidate %s locally refused - would disconnect finalized block %s at height %d\n",
+                     pindexCandidate->GetBlockHash().ToString().substr(0, 16),
+                     pindex->GetBlockHash().ToString().substr(0, 16), pindex->nHeight);
+            return true;
+        }
+    }
+
+    // Connect side: activating the candidate connects (fork, candidate]. Refuse if
+    // any of those blocks sits at a height the local view holds finalized to a
+    // DIFFERENT hash — same predicate as the ConnectBlock / AcceptBlockHeader /
+    // TestBlockValidity sites this filter shadows.
+    if (finalityHandler) {
+        for (const CBlockIndex* pindex = pindexCandidate;
+             pindex && pindex != pindexFork; pindex = pindex->pprev) {
+            if (finalityHandler->HasConflictingFinality(pindex->nHeight, pindex->GetBlockHash())) {
+                LogPrint(BCLog::STATE, "Quorum Finality: candidate %s locally refused - block %s at height %d conflicts with local finality\n",
+                         pindexCandidate->GetBlockHash().ToString().substr(0, 16),
+                         pindex->GetBlockHash().ToString().substr(0, 16), pindex->nHeight);
+                return true;
+            }
+        }
     }
 
     return false;
@@ -459,10 +534,22 @@ bool CFinalityManagerHandler::AddSignature(const CHuSignature& sig)
     size_t sigCount = finality.GetSignatureCount();        // raw signatures (logging)
     size_t uniqueOps = finality.GetUniqueOperatorCount();  // the finality quantity
 
-    LogPrint(BCLog::STATE, "Quorum Finality: Added signature %zu/%d (ops=%zu) from %s for block %s\n",
-             sigCount, nThreshold, uniqueOps,
-             sig.proTxHash.ToString().substr(0, 16),
-             sig.blockHash.ToString().substr(0, 16));
+    // LOT 4: below the Sybil floor nThreshold is the internal sentinel; never print
+    // it as a number (it would read as "2/2147483647"). Say what is actually true.
+    if (nThreshold == hu::HU_FINALITY_THRESHOLD_UNREACHABLE) {
+        LogPrint(BCLog::STATE, "Quorum Finality: Added signature %zu (ops=%zu) from %s for block %s"
+                               " - finality UNREACHABLE: operator population below the Sybil floor"
+                               " (nHuQuorumSize=%d)\n",
+                 sigCount, uniqueOps,
+                 sig.proTxHash.ToString().substr(0, 16),
+                 sig.blockHash.ToString().substr(0, 16),
+                 consensus.nHuQuorumSize);
+    } else {
+        LogPrint(BCLog::STATE, "Quorum Finality: Added signature %zu/%d (ops=%zu) from %s for block %s\n",
+                 sigCount, nThreshold, uniqueOps,
+                 sig.proTxHash.ToString().substr(0, 16),
+                 sig.blockHash.ToString().substr(0, 16));
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // I1: PERSIST SIGNATURE TO DB

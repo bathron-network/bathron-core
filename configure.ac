@@ -269,6 +269,56 @@ AC_ARG_ENABLE([debug],
   [enable_debug=$enableval],
   [enable_debug=no])
 
+dnl LOT 1 r15 — LAB-ONLY consensus commit-failure seam (fault injection for the
+dnl fatal-abort real-process proof). Compile-time gated, DEFAULT OFF: official
+dnl release AND test builds do not contain it; only an explicitly configured
+dnl laboratory build does. Never enable for a deployed binary.
+AC_ARG_ENABLE([lab-failcommit],
+  [AS_HELP_STRING([--enable-lab-failcommit],
+  [compile the LAB-ONLY consensus commit-failure seam (regtest fault injection; never for release, default no)])],
+  [enable_lab_failcommit=$enableval],
+  [enable_lab_failcommit=no])
+if test "x$enable_lab_failcommit" = xyes; then
+  AC_DEFINE([BATHRON_ENABLE_LAB_FAILCOMMIT], [1],
+            [Define to compile the LAB-only consensus commit-failure seam (never in release builds)])
+fi
+
+dnl LOT 6 r2 (B1): a LAB/TEST-ONLY hook that lets a test change the local finality
+dnl view at the exact instant ActivateBestChainStep runs — the only way to reach the
+dnl three fLocalFinalityRefused backstops, which exist for a real race (the finality
+dnl write path is deliberately lock-free, see net_processing.cpp). It is a
+dnl std::function set only from C++ test code: it is NOT reachable from RPC, config
+dnl or environment, and it is COMPILED OUT entirely without this flag, so a release
+dnl binary contains neither the symbol nor the call site.
+AC_ARG_ENABLE([lab-finality-hook],
+  [AS_HELP_STRING([--enable-lab-finality-hook],
+  [compile the LAB-ONLY finality-view test hook (unit tests only; never for release, default no)])],
+  [enable_lab_finality_hook=$enableval],
+  [enable_lab_finality_hook=no])
+if test "x$enable_lab_finality_hook" = xyes; then
+  AC_DEFINE([BATHRON_ENABLE_LAB_FINALITY_HOOK], [1],
+            [Define to compile the LAB-only finality-view test hook (never in release builds)])
+fi
+
+
+dnl LOT 9 M4 — LAB-ONLY regtest genesis premine. The regtest genesis carries
+dnl convenience outputs with published WIFs so automated tests can fund collateral
+dnl without a BTC burn. That is an intentional deviation from the burn-only model
+dnl (A5) and it PROVES NOTHING about monetary invariants. It must never reach a
+dnl release binary, so it is compile-gated exactly like the other lab seams:
+dnl DEFAULT OFF, and a release build's regtest genesis is burn-only (one zero-value
+dnl coinbase output, same shape as mainnet/testnet). Test and laboratory builds
+dnl configure with --enable-lab-premine.
+AC_ARG_ENABLE([lab-premine],
+  [AS_HELP_STRING([--enable-lab-premine],
+  [compile the LAB-ONLY regtest genesis premine (tests and local labs only; never for release, default no)])],
+  [enable_lab_premine=$enableval],
+  [enable_lab_premine=no])
+if test "x$enable_lab_premine" = xyes; then
+  AC_DEFINE([BATHRON_ENABLE_LAB_PREMINE], [1],
+            [Define to compile the LAB-only regtest genesis premine (never in release builds)])
+fi
+
 dnl Enable the Sapling proof stub (for testnet/regtest development)
 dnl SECURITY: This allows shielded txes without Groth16 verification.
 dnl           NEVER enable on mainnet - runtime and compile guards prevent this.

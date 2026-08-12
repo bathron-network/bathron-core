@@ -229,6 +229,13 @@ public:
     void ForceSetArg(const std::string& strArg, const std::string& strValue);
 
     /**
+     * Remove an arg setting entirely (override AND config layers), restoring
+     * genuine ABSENCE semantics: a later Get*Arg(strArg, default) returns the
+     * caller's default. Testing only — production code never unsets options.
+     */
+    void ForceRemoveArg(const std::string& strArg);
+
+    /**
      * Looks for -regtest, -testnet and returns the appropriate BIP70 chain name.
      * @return CBaseChainParams::MAIN by default; raises runtime error if an invalid combination is given.
      */

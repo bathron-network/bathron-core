@@ -144,13 +144,28 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     { "waitfornewblock", 0, "timeout" },
     { "walletpassphrase", 1, "timeout" },
     // ProTx commands (DMN)
+    // LOT 9 M4-BIS: every non-string argument MUST be listed here or the RPC is
+    // unusable from bathron-cli — the call dies on "JSON value is not an integer
+    // as expected" before it ever reaches the node. M4 found `getquorum height`
+    // missing this way; PHASE 1 then found protx_revoke and protx_list in the same
+    // state, so the whole family is enumerated now rather than one entry at a time.
     { "protx_register", 1, "collateralIndex" },
     { "protx_register_prepare", 1, "collateralIndex" },
+    { "protx_revoke", 2, "reason" },
+    { "protx_list", 0, "detailed" },
+    { "protx_list", 1, "wallet_only" },
+    { "protx_list", 2, "valid_only" },
+    { "protx_list", 3, "height" },
     // Settlement commands (BP30)
     { "split_m1", 1, "outputs" },
     { "sweepfees", 1, "dry_run" },
     // Bootstrap commands
     { "generatebootstrap", 0, "nblocks" },
+    // LOT 9 M4: getquorum's height argument was absent from this table, so
+    // `bathron-cli getquorum 39` failed with "JSON value is not an integer" —
+    // the schedule display RPC was unusable from the CLI at any height but the
+    // tip. Found by the 7-operator laboratory.
+    { "getquorum", 0, "height" },
     // BTC burn claim commands (BP10)
     { "submitburnclaim", 2, "height" },
     { "submitburnclaim", 3, "merkle_proof" },

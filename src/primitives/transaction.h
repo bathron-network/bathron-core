@@ -288,6 +288,8 @@ public:
         TX_MINT_M0BTC = 32,   // Create spendable M0BTC UTXOs (finalization)
         // BP-SPVMNPUB: On-chain BTC header publication
         TX_BTC_HEADERS = 33,  // BTC SPV headers published by MNs
+        // LOT 9 M3: operator lease renewal (objective liveness declaration)
+        TX_OPERATOR_LEASE = 34,  // operator-signed lease renewal; expiry derived by consensus
         // BP02 HTLC Settlement (M1 atomic swaps)
         HTLC_CREATE_M1 = 40,  // M1 Receipt -> HTLC P2SH
         HTLC_CLAIM = 41,      // HTLC P2SH + preimage -> M1 Receipt

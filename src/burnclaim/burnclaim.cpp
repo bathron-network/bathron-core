@@ -16,6 +16,7 @@
 #include "pubkey.h"
 #include "script/standard.h"
 #include "streams.h"
+#include "util/system.h"              // gArgs — producer-side -enablemint policy (LOT 2)
 #include "utilmoneystr.h"             // BATHRON: FormatMoney
 #include "validation.h"
 
@@ -808,7 +809,7 @@ bool IsBtcBurnStillValidConsensus(const BurnClaimRecord& record)
     return true;
 }
 
-bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight)
+bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight, CBurnClaimDB::Batch& batch)
 {
     if (!g_burnclaimdb) {
         LogPrintf("ERROR: EnterPendingState - burnclaimdb not initialized\n");
@@ -843,11 +844,12 @@ bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight)
     record.finalHeight = 0;
     record.status = BurnClaimStatus::PENDING;
 
-    // Store in DB (upsert - overwrites if re-claim after BTC reorg)
-    if (!g_burnclaimdb->StoreBurnClaim(record)) {
-        LogPrintf("ERROR: EnterPendingState - StoreBurnClaim failed\n");
-        return false;
-    }
+    // AUD-017: stage into the CALLER'S batch — never write through to LevelDB here.
+    // The batch is committed only in ProcessSpecialTxsInBlock's final commit phase,
+    // after every validation has passed, so a block that fails later leaves NO
+    // durable record behind. (Previously this called StoreBurnClaim, which does its
+    // own db->WriteBatch and is therefore durable before the block is validated.)
+    batch.StoreBurnClaim(record);
 
     LogPrint(BCLog::STATE, "Burn claim entered PENDING: btc_txid=%s amount=%lld dest=%s\n",
              btcTxid.ToString(), record.burnedSats, record.bathronDest.ToString());
@@ -855,7 +857,7 @@ bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight)
     return true;
 }
 
-bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height)
+bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height, CBurnClaimDB::Batch& batch)
 {
     if (!g_burnclaimdb) {
         return false;
@@ -868,12 +870,11 @@ bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height)
     }
     uint256 btcTxid = ComputeBtcTxid(btcTx);
 
-    // Simply remove the claim record
-    // DO NOT touch supply/claimed - that's handled by DisconnectMintM0BTC
-    if (!g_burnclaimdb->DeleteBurnClaim(btcTxid)) {
-        LogPrintf("ERROR: UndoBurnClaim - DeleteBurnClaim failed for %s\n", btcTxid.ToString());
-        return false;
-    }
+    // Remove the claim record. DO NOT touch supply/claimed — that is
+    // DisconnectMintM0BTC's job.
+    // AUD-017: staged into the caller's batch so a disconnect that fails partway
+    // leaves burnclaimdb exactly as it was.
+    batch.DeleteBurnClaim(btcTxid);
 
     LogPrint(BCLog::STATE, "Burn claim undone: btc_txid=%s at BATHRON height=%d\n",
              btcTxid.ToString(), height);
@@ -885,19 +886,20 @@ bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height)
 // TX_MINT_M0BTC Creation and Validation
 //==============================================================================
 
-CTransaction CreateMintM0BTC(uint32_t blockHeight)
+CTransaction CreateExpectedMintM0BTC(uint32_t blockHeight)
 {
-    LogPrintf("CreateMintM0BTC: ENTER height=%d burns_enabled=%d db=%p\n",
-              blockHeight, AreBtcBurnsEnabled() ? 1 : 0, (void*)g_burnclaimdb.get());
-
-    // BP12 Kill Switch: Don't create mint TX if burns are disabled
-    if (!AreBtcBurnsEnabled()) {
-        LogPrintf("CreateMintM0BTC: EXIT - burns disabled\n");
-        return CTransaction();  // Burns disabled by kill switch
-    }
+    // LOT 2 (AUD-003) — CONSENSUS ORACLE. This function decides block validity
+    // (ProcessSpecialTxsInBlock compares the block's mint against its result), so
+    // it reads ONLY consensus state: burnclaimdb + btcheadersdb. The kill switch /
+    // -enablemint MUST NOT be consulted here — the old AreBtcBurnsEnabled() early
+    // return made a node-local flag flip the expected mint, splitting honest nodes
+    // over the very same block. Local policy now lives ONLY in the producer wrapper
+    // CreateMintM0BTC below.
+    LogPrintf("CreateExpectedMintM0BTC: ENTER height=%d db=%p\n",
+              blockHeight, (void*)g_burnclaimdb.get());
 
     if (!g_burnclaimdb) {
-        LogPrintf("CreateMintM0BTC: EXIT - no burnclaimdb\n");
+        LogPrintf("CreateExpectedMintM0BTC: EXIT - no burnclaimdb\n");
         return CTransaction();  // DB not available
     }
 
@@ -921,7 +923,7 @@ CTransaction CreateMintM0BTC(uint32_t blockHeight)
         return true;  // Continue iteration
     });
 
-    LogPrintf("CreateMintM0BTC: height=%d k=%d eligible=%d\n",
+    LogPrintf("CreateExpectedMintM0BTC: height=%d k=%d eligible=%d\n",
               blockHeight, k, eligibleTxids.size());
 
     if (eligibleTxids.empty()) {
@@ -933,7 +935,7 @@ CTransaction CreateMintM0BTC(uint32_t blockHeight)
                       record.btcTxid.ToString().substr(0, 16), record.claimHeight);
             return totalPending < 5;  // Only log first 5
         });
-        LogPrintf("CreateMintM0BTC: No eligible claims (total pending: %d)\n", totalPending);
+        LogPrintf("CreateExpectedMintM0BTC: No eligible claims (total pending: %d)\n", totalPending);
         return CTransaction();  // No mint TX needed
     }
 
@@ -976,6 +978,35 @@ CTransaction CreateMintM0BTC(uint32_t blockHeight)
     mtx.extraPayload = std::vector<uint8_t>(ss.begin(), ss.end());
 
     return CTransaction(mtx);
+}
+
+bool MintPolicyAllowsProduction()
+{
+    // LOT 2 (AUD-003) — the ONLY place the node-local mint policy is read outside the
+    // mempool. Both inputs are node-local and uncoordinated, so neither may ever be
+    // consulted on a validation path.
+    const bool fKillSwitch = !AreBtcBurnsEnabled();
+    const bool fMintDisabled = !gArgs.GetBoolArg("-enablemint", DEFAULT_ENABLE_MINT);
+    if (fKillSwitch || fMintDisabled) {
+        LogPrintf("MINT POLICY: this node will not build a mint "
+                  "(killswitch=%d, -enablemint=0:%d) — validity of RECEIVED blocks is "
+                  "unaffected; if a mint is due the assembler produces no block\n",
+                  fKillSwitch ? 1 : 0, fMintDisabled ? 1 : 0);
+        return false;
+    }
+    return true;
+}
+
+CTransaction CreateMintM0BTC(uint32_t blockHeight)
+{
+    // LOT 2 (AUD-003) — PRODUCER-SIDE POLICY ONLY. The kill switch and -enablemint
+    // decide whether THIS node spontaneously builds a mint; they can never change
+    // whether a received block is valid (validation uses CreateExpectedMintM0BTC
+    // directly). If the consensus oracle says a mint is REQUIRED while policy
+    // refuses, the assembler must refuse to produce a block at all — see
+    // BlockAssembler::CreateNewBlock / AddRequiredMintOrRefuse.
+    if (!MintPolicyAllowsProduction()) return CTransaction();
+    return CreateExpectedMintM0BTC(blockHeight);
 }
 
 bool CheckMintM0BTC(const CTransaction& tx,
@@ -1033,11 +1064,13 @@ bool CheckMintM0BTC(const CTransaction& tx,
     // coordination, so a *consensus* reject gated on it splits honest nodes that
     // hold different states — precisely during an emergency, when partial fleet
     // activation is most likely. The brake for mints is PRODUCER-side:
-    // CreateMintM0BTC refuses to build a mint while burns are disabled (mints
-    // never transit the mempool — AcceptToMemoryPool rejects TX_MINT_M0BTC
-    // unconditionally — so the producer gate IS the policy layer). A disabled
-    // node still validates blocks containing mints, which remain fully bounded
-    // by the consensus checks below + the A5/A7 supply rules.
+    // CreateMintM0BTC (the policy wrapper) refuses to build a mint while burns are
+    // disabled (mints never transit the mempool — AcceptToMemoryPool rejects
+    // TX_MINT_M0BTC unconditionally — so the producer gate IS the policy layer).
+    // LOT 2 (AUD-003) made the statement below actually TRUE: the validation oracle
+    // is CreateExpectedMintM0BTC, which never reads the flag, so a disabled node
+    // really does validate blocks containing mints identically to an enabled one —
+    // bounded by the consensus checks below + the A5/A7 supply rules.
 
     if (!g_burnclaimdb) {
         return state.Invalid(false, REJECT_INVALID, "mint-no-db",
@@ -1123,16 +1156,16 @@ bool CheckMintM0BTC(const CTransaction& tx,
 // Connect/Disconnect for TX_MINT_M0BTC
 //==============================================================================
 
-void ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
+bool ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight, CBurnClaimDB::Batch& batch)
 {
     if (!g_burnclaimdb) {
         LogPrintf("ERROR: ConnectMintM0BTC - burnclaimdb not initialized\n");
-        return;
+        return false;
     }
 
     if (!tx.extraPayload) {
         LogPrintf("ERROR: ConnectMintM0BTC - missing extraPayload\n");
-        return;
+        return false;
     }
 
     MintPayload payload;
@@ -1141,16 +1174,23 @@ void ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
         ss >> payload;
     } catch (...) {
         LogPrintf("ERROR: ConnectMintM0BTC - failed to decode payload\n");
-        return;
+        return false;
     }
 
-    auto batch = g_burnclaimdb->CreateBatch();
-
+    // This reads COMMITTED state, so it cannot see a claim staged by this same block.
+    // CheckMintM0BTC (mint-unknown-claim / mint-claim-too-early) makes an unknown
+    // claim unreachable on the normal path — and since LOT 2 removed the
+    // -enablemint=0 validation bypass, that guard now ALWAYS runs, so the round-11
+    // double-mint route (TX_BURN_CLAIM(X) + TX_MINT_M0BTC(X) in one block leaving X
+    // PENDING with the mint outputs created) is closed at validation. This check is
+    // kept as DEFENSE IN DEPTH: if a mint naming an unknown claim ever reaches the
+    // stage phase anyway, fail the block rather than silently `continue`.
     for (const uint256& btcTxid : payload.btcTxids) {
         BurnClaimRecord record;
         if (!g_burnclaimdb->GetBurnClaim(btcTxid, record)) {
-            LogPrintf("ERROR: ConnectMintM0BTC - claim not found: %s\n", btcTxid.ToString());
-            continue;
+            LogPrintf("ERROR: ConnectMintM0BTC - claim not found (or staged in this same "
+                      "block): %s\n", btcTxid.ToString());
+            return false;
         }
 
         // Update status to FINAL
@@ -1163,21 +1203,21 @@ void ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
                  btcTxid.ToString(), record.burnedSats);
     }
 
-    batch.Commit();
-
+    // AUD-017: no Commit() here — the caller owns the batch and commits once.
     // UTXOs are created via normal vout processing
+    return true;
 }
 
-void DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
+bool DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight, CBurnClaimDB::Batch& batch)
 {
     if (!g_burnclaimdb) {
         LogPrintf("ERROR: DisconnectMintM0BTC - burnclaimdb not initialized\n");
-        return;
+        return false;
     }
 
     if (!tx.extraPayload) {
         LogPrintf("ERROR: DisconnectMintM0BTC - missing extraPayload\n");
-        return;
+        return false;
     }
 
     MintPayload payload;
@@ -1186,16 +1226,26 @@ void DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
         ss >> payload;
     } catch (...) {
         LogPrintf("ERROR: DisconnectMintM0BTC - failed to decode payload\n");
-        return;
+        return false;
     }
-
-    auto batch = g_burnclaimdb->CreateBatch();
 
     for (const uint256& btcTxid : payload.btcTxids) {
         BurnClaimRecord record;
         if (!g_burnclaimdb->GetBurnClaim(btcTxid, record)) {
+            // ROUND 14 (D3): was `continue`, which silently produced a half-rewound
+            // burnclaim DB and still reported a successful disconnect.
             LogPrintf("ERROR: DisconnectMintM0BTC - claim not found: %s\n", btcTxid.ToString());
-            continue;
+            return false;
+        }
+
+        // ROUND 15 (Phase G): a disconnect of a mint may only rewind a claim that IS
+        // FINAL. Anything else means the record was already modified (double rewind,
+        // torn state) — reverting it "again" would double-decrement the M0BTC supply.
+        if (record.status != BurnClaimStatus::FINAL) {
+            LogPrintf("ERROR: DisconnectMintM0BTC - claim %s is not FINAL (status=%d); "
+                      "record already modified, refusing rewind\n",
+                      btcTxid.ToString(), (int)record.status);
+            return false;
         }
 
         // Revert status to PENDING
@@ -1207,7 +1257,7 @@ void DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight)
         LogPrint(BCLog::STATE, "Burn claim finalization reverted: btc_txid=%s\n", btcTxid.ToString());
     }
 
-    batch.Commit();
-
+    // AUD-017: no Commit() here — the caller owns the batch and commits once.
     // UTXOs are removed via normal reorg UTXO handling
+    return true;
 }

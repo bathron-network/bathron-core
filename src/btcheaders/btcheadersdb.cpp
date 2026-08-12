@@ -453,16 +453,25 @@ bool CheckBtcHeadersDBConsistency(const uint256& chainTipHash, bool& fRequireReb
         return true;
     }
 
-    // Best block not in active chain - this can happen after reindex/bootstrap
-    // where btcheadersdb was restored from another node. BTC header data is
-    // chain-independent (BTC signet headers), so just update the marker.
-    LogPrintf("BtcHeadersDB: db=%s not in active chain (tip=%s) - updating marker\n",
+    // ROUND 11, BLOCKING FIX — no more silent marker repair.
+    //
+    // This used to REWRITE the marker to the tip and return true. That made
+    // btcheadersdb the one consensus DB whose startup gate could never report a
+    // divergence: headers committed by a block that was subsequently REJECTED stayed
+    // in the consensus DB and the node started clean on top of them. Since
+    // CheckBurnClaim requires the referenced BTC header to be present in this DB, such
+    // a node accepts burn claims its peers reject — a chain split.
+    //
+    // The old justification ("BTC header data is chain-independent, so just update the
+    // marker") is wrong in this context: the DB is only ever written by
+    // ProcessBtcHeadersTxInBlock, i.e. by a CONNECTED block, so a marker naming a block
+    // that is not on the active chain means this DB reflects work the chain does not
+    // contain. Fail closed and let -reindex rebuild it from the canonical chain.
+    LogPrintf("BtcHeadersDB: db=%s NOT in active chain (tip=%s) — inconsistent, rebuild required\n",
               dbBestBlock.ToString().substr(0, 16),
               chainTipHash.ToString().substr(0, 16));
-    g_btcheadersdb->WriteBestBlock(chainTipHash);
-    LogPrintf("BtcHeadersDB: best block marker updated to %s\n",
-              chainTipHash.ToString().substr(0, 16));
-    return true;
+    fRequireRebuild = true;
+    return false;
 }
 
 // NOTE: BootstrapBtcHeadersDBFromSPV removed.

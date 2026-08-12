@@ -71,8 +71,11 @@ BOOST_AUTO_TEST_CASE(bft_threshold_is_ceil_two_thirds_of_four)
 {
     BOOST_REQUIRE_EQUAL(operators.size(), 4u);
     BOOST_CHECK_EQUAL(Threshold(4), 3);      // ceil(2/3·4) = 3  → tolerates f=1
-    BOOST_CHECK_EQUAL(Threshold(3), 2);      // ceil(2/3·3) = 2
-    BOOST_CHECK_EQUAL(Threshold(1), 1);      // single-op degenerate
+    // LOT 4 (AUD-002): below nHuQuorumSize the threshold is UNREACHABLE, not 2.
+    // Threshold(1)==1 — a SINGLE operator finalizing alone — was the precise danger
+    // the finding named; it must no longer be expressible.
+    BOOST_CHECK_EQUAL(Threshold(3), hu::HU_FINALITY_THRESHOLD_UNREACHABLE);      // ceil(2/3·3) = 2
+    BOOST_CHECK_EQUAL(Threshold(1), hu::HU_FINALITY_THRESHOLD_UNREACHABLE);      // single-op degenerate
 }
 
 // SAFETY-adjacent: one byzantine operator, even signing with every identity it

@@ -334,7 +334,26 @@ UniValue getfinalitystatus(const JSONRPCRequest& request)
         const CBlockIndex* pTip = chainActive.Tip();
         const int nOperators = pTip ? hu::HuFinalityOperatorCount(pTip->GetBlockHash()) : 0;
         result.pushKV("operators", nOperators);
-        result.pushKV("quorum_threshold", hu::HuActiveFinalityThreshold(consensus, nOperators));
+        // LOT 4 (AUD-002): below the Sybil floor the threshold is the internal
+        // sentinel HU_FINALITY_THRESHOLD_UNREACHABLE. It must NEVER leak to a user as
+        // a number (it would read as "threshold = 2147483647"). Report the condition
+        // instead — the floor is the operator-facing fact, not the sentinel.
+        if (hu::HuFinalityFloorMet(consensus, nOperators)) {
+            result.pushKV("quorum_threshold", hu::HuActiveFinalityThreshold(consensus, nOperators));
+            result.pushKV("finality_reachable", true);
+        } else {
+            // NOT UniValue::VNULL: it is an UNSCOPED enum, so integral promotion
+            // selects pushKV(key, int64_t) and this would publish
+            // "quorum_threshold": 0 — i.e. "no signatures required", the exact
+            // opposite of the truth, during the emergency this branch exists for.
+            result.pushKV("quorum_threshold", UniValue());
+            result.pushKV("finality_reachable", false);
+            result.pushKV("finality_blocked_reason",
+                          strprintf("only %d distinct operator(s) — below the Sybil floor "
+                                    "nHuQuorumSize=%d; finality is unreachable until the "
+                                    "operator population recovers",
+                                    nOperators, consensus.nHuQuorumSize));
+        }
     }
 
     // Determine status based on lag
@@ -484,6 +503,9 @@ UniValue getquorum(const JSONRPCRequest& request)
             "  \"finality_threshold\" : n,              (numeric) Signatures needed for finality\n"
             "  \"total_operators\" : n,                 (numeric) Eligible operators at this block\n"
             "  \"producer_operator\" : \"pubkey\",        (string) Block producer's operator\n"
+            "  \"schedule_status\" : \"str\",             (string) DMM schedule resolution: ok|no_signer|deferred|local_state_missing_fatal\n"
+            "  \"schedule_raw_slot\" : n,               (numeric, when ok) Raw producer slot from chain timestamps\n"
+            "  \"schedule_recovery_mode\" : b,          (boolean, when ok) True if the recovery permutation elected the leader\n"
             "  \"operators\" : [                  (array) Quorum operators\n"
             "    {\n"
             "      \"operator\" : \"pubkey\",       (string) Operator public key\n"
@@ -521,24 +543,32 @@ UniValue getquorum(const JSONRPCRequest& request)
     // no fixed top-N list. Show the eligible operator set (each is a per-block VRF
     // candidate), the expected committee size E and the ceil(2/3·E) finality threshold,
     // and the producer operator (which also votes on its own block).
+    // LOT 9 M1+M2: display EXACTLY the consensus schedule — same engine
+    // (ResolveScheduledProducer), same parent, same nTime as validation. On a
+    // non-OK status the schedule fields say so instead of faking a producer;
+    // a display RPC never fires the fatal latch.
     CPubKey producerOperator;
+    mn_consensus::DMMScheduleResult schedRes;
+    mn_consensus::ScheduleStatus schedStatus;
     {
         CDeterministicMNCPtr prodMn;
-        int prodIdx = 0;
-        if (mn_consensus::GetExpectedProducer(pindex->pprev, pindex->GetBlockTime(), mnList, prodMn, prodIdx) && prodMn) {
+        schedStatus = mn_consensus::ResolveScheduledProducer(pindex->pprev, pindex->GetBlockTime(),
+                                                             prodMn, schedRes);
+        if (schedStatus == mn_consensus::ScheduleStatus::OK && prodMn) {
             producerOperator = prodMn->pdmnState->pubKeyOperator;
         }
     }
 
-    auto allOperators = hu::GetUniqueOperators(mnList);
+    // LOT 9 M3: the displayed operator set IS the finality population — the epoch
+    // snapshot's lease-valid productionSet (same function every N derives from).
+    auto allOperators = hu::GetEpochFinalityOperators(pindex->pprev);
 
     std::map<CPubKey, int> operatorMnCount;
     std::map<CPubKey, CDeterministicMNCPtr> operatorRepresentative;
     mnList.ForEachMN(true, [&](const CDeterministicMNCPtr& dmn) {
-        // Match GetUniqueOperators / the finality committee: bootstrap MNs are eligible
-        // without confirmedHash, so the displayed set tracks the actual finality set.
-        const bool isBootstrapMN = (dmn->pdmnState->nRegisteredHeight <= consensus.nDMMBootstrapHeight);
-        if (isBootstrapMN || !dmn->pdmnState->confirmedHash.IsNull()) {
+        // Count MNs per operator only for operators in the finality set, so the
+        // displayed table tracks exactly the set that decides N.
+        if (allOperators.count(dmn->pdmnState->pubKeyOperator)) {
             operatorMnCount[dmn->pdmnState->pubKeyOperator]++;
             if (operatorRepresentative.find(dmn->pdmnState->pubKeyOperator) == operatorRepresentative.end()) {
                 operatorRepresentative[dmn->pdmnState->pubKeyOperator] = dmn;
@@ -549,9 +579,22 @@ UniValue getquorum(const JSONRPCRequest& request)
     UniValue result(UniValue::VOBJ);
     result.pushKV("height", height);
     result.pushKV("expected_committee_size", consensus.nHuExpectedCommitteeSize);
-    result.pushKV("finality_threshold", hu::HuVrfFinalityThreshold(consensus.nHuExpectedCommitteeSize));
+    // LOT 9 M4 (measured in the 7-operator laboratory): this printed
+    // ceil(2/3·E) UNCONDITIONALLY — 86 at the shipped E=128 — while the
+    // consensus threshold is ceil(2/3·min(E,N)), i.e. 5 with 7 operators.
+    // An operator reading this during an incident would believe finality needs
+    // 86 signatures when it needs 5. Use the SAME function consensus uses, on
+    // the SAME population the block resolves.
+    result.pushKV("finality_threshold",
+                  hu::HuActiveFinalityThreshold(consensus, (int)allOperators.size()));
     result.pushKV("total_operators", (int)allOperators.size());
     result.pushKV("producer_operator", producerOperator.IsValid() ? HexStr(producerOperator) : "unknown");
+    // LOT 9: the consensus schedule, verbatim (same engine as validation).
+    result.pushKV("schedule_status", mn_consensus::ScheduleStatusName(schedStatus));
+    if (schedStatus == mn_consensus::ScheduleStatus::OK) {
+        result.pushKV("schedule_raw_slot", schedRes.nRawSlot);
+        result.pushKV("schedule_recovery_mode", schedRes.fRecovery);
+    }
 
     UniValue operators(UniValue::VARR);
     for (const auto& entry : allOperators) {

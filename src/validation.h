@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <exception>
 #include <map>
 #include <memory>
@@ -183,8 +184,140 @@ bool GetTransaction(const uint256& hash, CTransactionRef& tx, uint256& hashBlock
 /** Find the best known block, and make it the tip of the block chain */
 bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pblock = std::shared_ptr<const CBlock>());
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOT 1 round 15 — consensus-DB fatal latch (AUD-017).
+//
+// When a consensus-DB commit fails mid-sequence, some LevelDB instances may be
+// ahead of the others: the local storage is torn. From that instant NOTHING may
+// connect or disconnect blocks in this process — a retry re-runs the whole apply
+// phase on top of the committed prefix and can convert a purely LOCAL storage
+// failure into a bogus consensus rejection of a VALID block (e.g. re-applying a
+// TX_BTC_HEADERS batch that is already durable fails "bad-btcheaders-not-heavier").
+// The only exit is a process restart: the startup consistency gate then reports
+// the torn state and instructs -reindex.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** First-failure context preserved by the latch (diagnostic, operator-facing). */
+struct ConsensusDBFatalContext {
+    bool fConnect{true};        //!< direction: true = connect, false = disconnect
+    int nStep{0};               //!< failing commit step (1 settlement, 2 btcheaders, 3 htlc, 4 burnclaim, 5 marker)
+    std::string strDB;          //!< human name of the failing commit
+    bool fPartial{false};       //!< true iff at least one earlier commit already succeeded
+    int nHeight{0};
+    uint256 blockHash;
+    std::string strMessage;     //!< full operator message
+};
+
+/** True iff a consensus-DB commit has failed in this process. Latched: once set it
+ *  stays set for the lifetime of the process — no RPC, argument or config can clear
+ *  it; only a restart (through the startup consistency gate) can. */
+bool IsConsensusDBFatal();
+
+/** Copy the FIRST failure's context. Returns false if the latch is not set. */
+bool GetConsensusDBFatalContext(ConsensusDBFatalContext& out);
+
+/** THE single fatal-abort primitive for consensus-DB commit failures (LOT 1 r15).
+ *
+ *  Order of effects (deliberate): (1) atomically latch `consensus_db_fatal` BEFORE
+ *  anything else; (2) preserve the FIRST failure's context (later calls do NOT
+ *  overwrite it); (3) invoke the real AbortNode mechanism — misc warning + fatal
+ *  log + UI message + StartShutdown — exactly ONCE, on the first call; (4) return
+ *  false, with `state` carrying a non-invalid Error(): a storage failure is NEVER
+ *  block invalidity, so no caller may derive BLOCK_FAILED_VALID from it.
+ *
+ *  Not reachable from any RPC, argument or config. Idempotent by construction.
+ *  `stateOut` may be null (disconnect side has no CValidationState). */
+bool AbortConsensusDBState(bool fConnect, int nStep, const std::string& strDB, bool fPartial,
+                           int nHeight, const uint256& blockHash, CValidationState* stateOut = nullptr);
+
+/** TEST-ONLY: clear the latch between unit-test cases. Compiled into the daemon but
+ *  called from nowhere in it (verified structurally); there is deliberately no RPC,
+ *  argument or config path to reach it. */
+void ResetConsensusDBFatalForTests();
+
 /** Counter for nested ActivateBestChain calls - used by DMM to avoid block production during sync */
 extern std::atomic<int> g_activating_best_chain;
+
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+/**
+ * LAB/TEST-ONLY seam (LOT 6 r3, blocker B1) — PHASED.
+ *
+ * The three local-finality backstops inside ActivateBestChainStep exist for a REAL
+ * race: the finality write path (ProcessHuSignature -> AddSignature) is deliberately
+ * lock-free — net_processing.cpp says so, and AddSignature avoids cs_main to keep the
+ * UpdateTip lock order — so the local view CAN change while ActivateBestChain holds
+ * cs_main, after its candidate filter has run.
+ *
+ * ONE hook at the top of the step cannot reach all three, because each backstop reads
+ * a DIFFERENT view at a DIFFERENT moment:
+ *   AFTER_FILTER        -> WouldViolateHuFinality, which reads the finality DB ONLY;
+ *   BEFORE_DISCONNECT   -> DisconnectTip, which reads the in-memory handler ONLY, and
+ *                          is only reached when the DB check above did NOT fire;
+ *   BEFORE_CONNECT      -> ConnectBlock's HasConflictingFinality, which needs a height
+ *                          finalized to a DIFFERENT hash, and is only reached after
+ *                          the disconnect loop completed.
+ * That is why an r2 test that finalized once at the top could not cover the last two.
+ *
+ * The callback may change the REAL finality view (handler/DB) at that instant. It must
+ * never set fLocalFinalityRefused nor dictate an outcome — the production code decides.
+ *
+ * Phase counters increment whenever a phase is REACHED, hook installed or not, so a
+ * test can assert mechanically that the branch it claims to cover really executed.
+ * A test whose name claims a branch without such a counter is forbidden: in r2 exactly
+ * such a test passed while never reaching its branch.
+ *
+ * Compiled in ONLY with ./configure --enable-lab-finality-hook (default off): the
+ * declaration, the definitions and every call site are compiled out otherwise, so a
+ * release binary contains neither the symbols nor the calls (verified with nm/strings).
+ * Settable only from C++ test code — no RPC, config or environment path exists.
+ */
+enum class LabFinalityPhase {
+    AFTER_FILTER = 0,        //!< top of ActivateBestChainStep, before the reorg backstop
+    BEFORE_DISCONNECT = 1,   //!< immediately before the disconnect loop
+    BEFORE_CONNECT = 2,      //!< immediately before the connect loop
+    // r4 / B3 — InvalidateBlock. Its span guard runs once, then the disconnect loop
+    // does N disk reads and flushes while the finality writer runs lock-free, so the
+    // race has to be injectable at each of these four points to prove the
+    // all-or-nothing marking really holds.
+    INV_AFTER_PREFLIGHT = 3,     //!< after the span guard passed, before anything else
+    INV_BEFORE_FIRST_DISCONNECT = 4,
+    INV_BETWEEN_DISCONNECTS = 5,
+    INV_BEFORE_MARKING = 6,      //!< all disconnects done, just before the status write
+    COUNT = 7
+};
+extern std::function<void(LabFinalityPhase)> g_lab_finality_hook;
+extern std::atomic<int> g_lab_finality_phase_hits[static_cast<size_t>(LabFinalityPhase::COUNT)];
+void LabFinalityPhaseReached(LabFinalityPhase phase);
+
+/**
+ * Per-BACKSTOP refusal counters. The phase counters above prove a phase was REACHED,
+ * which is NOT the same as the refusal branch having EXECUTED — a final independent
+ * review showed a phase counter is satisfied by any activation at all, so a test can
+ * still claim a branch it never entered. These increment at the exact lines that set
+ * fLocalFinalityRefused, so `Refusals(x) > 0` is proof the branch ran.
+ */
+enum class LabFinalityBackstop { REORG = 0, DISCONNECT = 1, CONNECT = 2, COUNT = 3 };
+
+/**
+ * LAB/TEST-ONLY READ-ONLY observers (r6). setBlockIndexCandidates and
+ * FindMostWorkChain are file-local to validation.cpp, so a test cannot otherwise
+ * assert the candidate-set invariant that ReAddBlockIndexCandidates exists to
+ * restore — and r5 could neither prove nor disprove that helper because of it.
+ * Both are strictly READ-ONLY, and that had to be FIXED: the first version of
+ * LabFindMostWorkChainHash called FindMostWorkChain(), which is NOT a pure function —
+ * it writes pindexBestInvalid, sets BLOCK_FAILED_CHILD, inserts into mapBlocksUnlinked
+ * and ERASES from setBlockIndexCandidates whenever the best candidate has a failed or
+ * data-missing ancestor. A probe that can mark blocks invalid in the very set it is
+ * measuring is not a measuring instrument; an independent review caught it. It now
+ * peeks at the same element FindMostWorkChain would start from, without any of that.
+ *
+ * Behind the same compile-time gate as the rest of the seam (absent from release:
+ * nm/strings report zero, no RPC/config/env path).
+ */
+std::vector<uint256> LabGetBlockIndexCandidates() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+uint256 LabBestCandidateHash() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+extern std::atomic<int> g_lab_finality_backstop_hits[static_cast<size_t>(LabFinalityBackstop::COUNT)];
+#endif
 
 CAmount GetBlockValue(int nHeight);
 

@@ -173,7 +173,7 @@ BOOST_AUTO_TEST_CASE(realGateActivationHeights)
         {Consensus::UPGRADE_V7_0, "V7_0/CTV"},
         {Consensus::UPGRADE_BTCHEADERS_REORG, "BTCHEADERS_REORG"},
         {Consensus::UPGRADE_M1_RECEIPT_PROTECTED, "M1_RECEIPT_PROTECTED"},
-        {Consensus::UPGRADE_POSE_PRODUCER_DECAY, "POSE_PRODUCER_DECAY"},
+        // LOT 9 M2: UPGRADE_POSE_PRODUCER_DECAY removed with the temporal-PoSe system.
         {Consensus::UPGRADE_BTCSTATE, "BTCSTATE"},
         {Consensus::UPGRADE_CSFS, "CSFS"},
         {Consensus::UPGRADE_CSV, "CSV"},

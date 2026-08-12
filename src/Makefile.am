@@ -142,6 +142,7 @@ BITCOIN_CORE_H = \
   bip38.h \
   bloom.h \
   blocksignature.h \
+  btcspv/btcsourcenet.h \
   btcspv/btcspv.h \
   btcheaders/btcheaders.h \
   btcheaders/btcheadersdb.h \
@@ -180,6 +181,7 @@ BITCOIN_CORE_H = \
   masternode/evodb.h \
   masternode/mnauth.h \
   masternode/evonotificationinterface.h \
+  masternode/lease_renewer.h \
   masternode/providertx.h \
   masternode/specialtx_validation.h \
   masternode/blockproducer.h \
@@ -342,6 +344,7 @@ libbitcoin_server_a_SOURCES = \
   httpserver.cpp \
   node/init.cpp \
   masternode/init.cpp \
+  masternode/lease_renewer.cpp \
   dbwrapper.cpp \
   sapling/sapling_validation.cpp \
   merkleblock.cpp \

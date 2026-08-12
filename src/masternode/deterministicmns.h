@@ -37,6 +37,14 @@ public:
     // block hash at confirmation; non-null gates production/finality eligibility (anti-grinding)
     uint256 confirmedHash;
 
+    // LOT 9 M3 — operator lease (deterministic, reconstructible; spec §C).
+    // Lease-valid at an epoch snapshot iff snapshotHeight < nLeaseExpiryHeight
+    // (EQUALITY = EXPIRED — the normative boundary). Initial state is set at
+    // registration: sequence 0, expiry = registrationHeight + nOperatorLeaseBlocks.
+    // Renewed ONLY by a valid TX_OPERATOR_LEASE (never implicitly by producing).
+    uint32_t nLeaseSequence{0};
+    int nLeaseExpiryHeight{0};
+
     CKeyID keyIDOwner;
     CPubKey pubKeyOperator;
     CPubKey pubKeyVRF;  // v3+: dedicated ECVRF sortition key (null for v2-registered MNs)
@@ -66,6 +74,8 @@ public:
         READWRITE(obj.nPoSeBanHeight);
         READWRITE(obj.nRevocationReason);
         READWRITE(obj.confirmedHash);
+        READWRITE(obj.nLeaseSequence);
+        READWRITE(obj.nLeaseExpiryHeight);
         READWRITE(obj.keyIDOwner);
         READWRITE(obj.pubKeyOperator);
         READWRITE(obj.pubKeyVRF);
@@ -115,6 +125,11 @@ public:
         Field_scriptPayout                      = 0x1000,
         // 0x2000 retired (was Field_scriptOperatorPayout — operator-reward removed)
         Field_pubKeyVRF                         = 0x4000,
+        // LOT 9 M3 — lease fields ride the SAME diff machinery as every other
+        // state field, so DisconnectBlock/-reindex restore sequence and expiry
+        // EXACTLY (no custom DB, no partial renewal possible).
+        Field_nLeaseSequence                    = 0x8000,
+        Field_nLeaseExpiryHeight                = 0x10000,
     };
 
 #define DMN_STATE_DIFF_ALL_FIELDS \
@@ -124,6 +139,8 @@ public:
     DMN_STATE_DIFF_LINE(nPoSeBanHeight) \
     DMN_STATE_DIFF_LINE(nRevocationReason) \
     DMN_STATE_DIFF_LINE(confirmedHash) \
+    DMN_STATE_DIFF_LINE(nLeaseSequence) \
+    DMN_STATE_DIFF_LINE(nLeaseExpiryHeight) \
     DMN_STATE_DIFF_LINE(keyIDOwner) \
     DMN_STATE_DIFF_LINE(pubKeyOperator) \
     DMN_STATE_DIFF_LINE(pubKeyVRF) \
@@ -348,13 +365,6 @@ public:
     CDeterministicMNCPtr GetMNByCollateral(const COutPoint& collateralOutpoint) const;
     CDeterministicMNCPtr GetMNByInternalId(uint64_t internalId) const;
 
-    /**
-     * Decrease penalty score of MN by 1.
-     * Only allowed on non-banned MNs.
-     * @param proTxHash
-     */
-    void PoSeDecrease(const uint256& proTxHash);
-
     CDeterministicMNListDiff BuildDiff(const CDeterministicMNList& to) const;
     CDeterministicMNList ApplyDiff(const CBlockIndex* pindex, const CDeterministicMNListDiff& diff) const;
 
@@ -511,7 +521,7 @@ public:
     // the returned list will not contain the correct block hash (we can't know it yet as the coinbase TX is not updated yet)
     bool BuildNewListFromBlock(const CBlock& block, const CBlockIndex* pindexPrev, CValidationState& state, CDeterministicMNList& mnListRet, bool debugLogs);
     // HU: HandleQuorumCommitment removed
-    void DecreasePoSePenalties(CDeterministicMNList& mnList);
+    // LOT 9 M2: DecreasePoSePenalties removed with the temporal-PoSe system
 
     // to return a valid list, it must have been built first, so never call it with a block not-yet connected (e.g. from CheckBlock).
     CDeterministicMNList GetListForBlock(const CBlockIndex* pindex);

@@ -82,6 +82,18 @@ CAmount ComputeMinM1Fee(size_t txSize, CAmount feeRate = 50);  // 50 sat/kB defa
 CAmount GetSettlementTxFee(const CTransaction& tx, CAmount valueIn, CAmount valueOut);
 
 /**
+ * CheckSettlementMinFee — LOT 9 M3 (spec O-5): consensus MINIMUM fee for the
+ * special txs that would otherwise reopen a zero-cost spam surface. Enforced in
+ * BOTH fee loops (mempool acceptance and ConnectBlock) right after
+ * GetSettlementTxFee, so the two can never diverge and there is NO exemption.
+ *
+ * Currently applies to TX_OPERATOR_LEASE only: fee >= ComputeMinM1Fee(txSize).
+ * Every other type returns true unchanged (their minimums live in their own
+ * checks). Rejection reason: bad-lease-fee.
+ */
+bool CheckSettlementMinFee(const CTransaction& tx, CAmount fee, CValidationState& state);
+
+/**
  * CheckFeeOutputAt - Validate fee output at specific index
  *
  * Enforces:
@@ -697,23 +709,93 @@ bool CheckA6P1(const SettlementState& state, CValidationState& validationState);
 bool CheckA7(const SettlementState& state, CAmount nMaxMoneyOut,
              CValidationState& validationState);
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// A5 — INDEPENDENT monetary conservation (LOT 8).
+//
+// The historical CheckA5 was a TAUTOLOGY: both of its terms were assigned from the
+// same local sum of the mint transactions' OWN outputs, so it compared X to X and
+// could not fail (doc/LOT8-PHASE0-A5-INVENTORY.md). It is REPLACED by a check whose
+// two sides come from INDEPENDENT write paths, so a mutation of a single path makes
+// them diverge and be caught:
+//   S-side (settlement): deltaS = Σ M0 created by the block's TX_MINT_M0BTC outputs.
+//   L-side (burn ledger): deltaL = Σ record.burnedSats of the parent's PENDING claims
+//                         this block finalizes (the parsed BTC-burn amounts, from
+//                         burnclaimdb — NEVER derived from the mint oracle or the
+//                         mint outputs).
+// The check runs on STAGED values BEFORE the commit phase (measured in
+// doc/LOT8-M1B-FAILAT-MATRIX.md: a partial commit failure leaves a durable S != L,
+// so post-commit accumulators must never be the gate's operands).
+// ═══════════════════════════════════════════════════════════════════════════════
+
 /**
- * CheckA5 - Verify A5 monetary conservation invariant
+ * CheckA5Independent - rules 2+3 of the LOT 8 A5 (delta + staged totals).
  *
- * A5: M0_total_supply(N) = M0_total_supply(N-1) + BurnClaims
+ * Preconditions (caller's rule 1): the parent totals prevS/prevL were read from DBs
+ * whose best-block markers are certified at the parent, and prevS == prevL was
+ * verified (a parent mismatch is a LOCAL fault, not this function's job).
  *
- * This is the ANTI-INFLATION invariant. Even if 90% of masternodes are
- * compromised, they cannot create M0 ex-nihilo. The ONLY way to increase
- * M0 supply is a verified BTC burn claim (block reward = 0, always).
+ * Rule 2: deltaS == deltaL, else a DETERMINISTIC consensus invalidity
+ *         ("settlement-a5-delta-mismatch") — every honest node computes both deltas
+ *         identically from the block + the parent's committed burn ledger.
+ * Rule 3: nextS = prevS + deltaS and nextL = prevL + deltaL are computed with
+ *         explicit overflow/negativity checks ("settlement-a5-overflow",
+ *         "settlement-a5-negative") and nextS == nextL is required before ANY commit
+ *         ("settlement-a5-total-mismatch" — unreachable if rules 1+2 hold, kept as
+ *         an arithmetic backstop).
  *
- * @param currentState Current block's settlement state (with coinbase_block set)
- * @param prevState Previous block's settlement state
- * @param validationState Output: error details if check fails
- * @return true if A5 holds, false if monetary conservation violated
+ * @param prevS  parent M0_total_supply (settlement DB at parent)
+ * @param prevL  parent m0btcSupply (burn ledger at parent)
+ * @param deltaS Σ mint outputs of this block
+ * @param deltaL Σ burnedSats of PENDING claims finalized by this block
+ * @param nMaxMoneyOut 21M cap (consensus)
+ * @param validationState Output on failure (MODE_INVALID, DoS 100)
+ * @param nextSOut On success: prevS + deltaS (the value to stage)
+ * @return true if the block's monetary delta is consistent
  */
-bool CheckA5(const SettlementState& currentState,
-             const SettlementState& prevState,
-             CValidationState& validationState);
+bool CheckA5Independent(CAmount prevS, CAmount prevL,
+                        CAmount deltaS, CAmount deltaL,
+                        CAmount nMaxMoneyOut,
+                        CValidationState& validationState,
+                        CAmount& nextSOut);
+
+/**
+ * A5Status - the four-state PUBLIC verdict (LOT 8). Never a misleading boolean:
+ *   VERIFIED         markers coherent, no fatal latch, S == L (really checked);
+ *   MISMATCH         markers coherent but S != L (independent totals diverge);
+ *   UNAVAILABLE      a total could not be read (DB missing/unreadable);
+ *   REINDEX_REQUIRED markers divergent or the consensus-DB fatal latch is set.
+ */
+enum class A5Status { VERIFIED, MISMATCH, UNAVAILABLE, REINDEX_REQUIRED };
+
+const char* A5StatusToString(A5Status s);
+
+/**
+ * ComputeA5Status - pure classifier for the four states (unit-testable; the RPC
+ * layer gathers the facts and calls this).
+ * Precedence: fatal latch / divergent markers dominate (REINDEX_REQUIRED), then
+ * unreadable totals (UNAVAILABLE), then the real S==L comparison.
+ */
+A5Status ComputeA5Status(bool fFatalLatch, bool fMarkersCoherent,
+                         bool fReadableS, bool fReadableL,
+                         CAmount S, CAmount L);
+
+/**
+ * A5MarkersCoherent - pure marker-coherence rule for the A5 status surface.
+ *
+ * Coherent means "both derived DBs agree they are at the chain tip", which is what makes
+ * their totals comparable. Two shapes are healthy:
+ *   - both markers PRESENT and both == the tip hash (the steady state: every block's own
+ *     commit writes them);
+ *   - both markers ABSENT **at a genesis tip only** — on a fresh chain nothing has
+ *     committed yet, so their absence is legitimate (same boundary as LOT 7's gate B).
+ * A node rolled back exactly TO genesis has them PRESENT at the genesis hash (the undo
+ * writes them), which the first form already accepts — that case previously reported
+ * REINDEX_REQUIRED on a perfectly healthy node.
+ * Anything else (one present one absent, or a marker off the tip) is incoherent.
+ */
+bool A5MarkersCoherent(bool fHaveSMarker, bool fHaveLMarker,
+                       const uint256& sMarker, const uint256& lMarker,
+                       const uint256& tipHash, bool fGenesisTip);
 
 /**
  *

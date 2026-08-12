@@ -399,7 +399,7 @@ bool CActiveDeterministicMasternodeManager::IsValidNetAddr(const CService& addrI
  * @param outSlot        [out] Calculated slot index
  * @return               Aligned block timestamp (0 if too early to produce)
  */
-static int64_t CalculateAlignedBlockTime(const CBlockIndex* pindexPrev, int64_t nNow, int& outSlot)
+static int64_t CalculateAlignedBlockTime(const CBlockIndex* pindexPrev, int64_t nNow, int64_t& outSlot)
 {
     outSlot = 0;
 
@@ -414,7 +414,7 @@ static int64_t CalculateAlignedBlockTime(const CBlockIndex* pindexPrev, int64_t 
 
     // NOTE (multi-operator liveness fix): the former bootstrap branch forced slot 0 +
     // 1s spacing for DMM-scheduler blocks at height <= nDMMBootstrapHeight, which (with
-    // GetProducerSlot's matching slot-0 force) left no producer fallback and froze
+    // the validation-side slot's matching slot-0 force) left no producer fallback and froze
     // multi-operator chains at the bootstrap→DMM handoff. DMM blocks now use the normal
     // path below (nTargetSpacing enforced + fallback after leaderTimeout). Bootstrap-MINED
     // blocks (generatebootstrap) don't use this function and are producer-check-exempt in
@@ -451,14 +451,12 @@ static int64_t CalculateAlignedBlockTime(const CBlockIndex* pindexPrev, int64_t 
     }
 
     // Past leader timeout - we're in fallback territory
-    // Calculate which fallback slot we're in
+    // Calculate which fallback slot we're in. UNCLAMPED (LOT 9): the legacy 360-slot
+    // clamp must never reach leader selection — with P > 360 identities the recovery
+    // mode could otherwise never be entered. Must stay consistent with
+    // mn_consensus::GetRawProducerSlot, which validation applies to block.nTime.
     int64_t extra = dt - consensus.nHuLeaderTimeoutSeconds;
-    int rawSlot = 1 + (extra / consensus.nHuFallbackRecoverySeconds);
-
-    // Clamp to max fallback slots
-    if (rawSlot > 360) {
-        rawSlot = 360;
-    }
+    int64_t rawSlot = 1 + (extra / consensus.nHuFallbackRecoverySeconds);
 
     outSlot = rawSlot;
 
@@ -490,12 +488,9 @@ bool CActiveDeterministicMasternodeManager::IsLocalBlockProducer(const CBlockInd
         return false;
     }
 
-    // Get the MN list at this height
-    CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pindexPrev);
-
     // Calculate aligned block time and slot
     int64_t nNow = GetTime();
-    int slot = 0;
+    int64_t slot = 0;
     int64_t alignedTime = CalculateAlignedBlockTime(pindexPrev, nNow, slot);
 
     // If alignedTime is 0, it means we're too early (nTargetSpacing not elapsed)
@@ -503,14 +498,47 @@ bool CActiveDeterministicMasternodeManager::IsLocalBlockProducer(const CBlockInd
         return false;
     }
 
-    // Use GetExpectedProducer with the aligned time to check who should produce
-    // This uses the SAME function that verification will use
-    CDeterministicMNCPtr expectedMn;
-    int producerIndex = 0;
-
-    if (!mn_consensus::GetExpectedProducer(pindexPrev, alignedTime, mnList, expectedMn, producerIndex)) {
-        // No confirmed MNs yet - we can't produce
+    // LOT 9 M4-BIS PHASE 1 — BOOTSTRAP GATE, mirroring CheckBlockMNOnly exactly.
+    // Below the activation height there is no epoch and no scheduled producer:
+    // blocks 1..nDMMBootstrapHeight come from generatebootstrap and are exempt from
+    // the producer check. This site was the ONE production caller that resolved the
+    // schedule with no such gate (AcceptBlock, ConnectBlock and the finality
+    // population all had one), so on a fresh chain every operator daemon resolved a
+    // snapshot that does not exist yet and shut itself down. Found by running the
+    // laboratory from genesis with the operator keys already loaded.
+    if (pindexPrev->nHeight + 1 < Params().GetConsensus().DMMScheduleActivationHeight()) {
         return false;
+    }
+
+    // LOT 9 M1+M2 — resolve the leader through the SAME engine validation uses
+    // (ResolveScheduledProducer, from the parent alone, at the aligned nTime the
+    // block will actually carry). The scheduler can therefore only ever produce
+    // exactly the block that AcceptBlock and ConnectBlock will accept.
+    CDeterministicMNCPtr expectedMn;
+    mn_consensus::DMMScheduleResult schedRes;
+    mn_consensus::ScheduleStatus schedStatus;
+    {
+        LOCK(cs_main);
+        schedStatus = mn_consensus::ResolveScheduledProducer(pindexPrev, alignedTime, expectedMn, schedRes);
+    }
+
+    switch (schedStatus) {
+        case mn_consensus::ScheduleStatus::OK:
+            break;
+        case mn_consensus::ScheduleStatus::NO_SIGNER:
+            // Objective consensus stall: the schedule elects nobody, so the local
+            // producer emits NOTHING. Not a local fault — every node agrees.
+            LogPrint(BCLog::MASTERNODE, "DMM-SCHEDULER: no eligible identity in the epoch snapshot at height %d — producing nothing (deterministic stall)\n",
+                     pindexPrev->nHeight + 1);
+            return false;
+        case mn_consensus::ScheduleStatus::DEFERRED:
+            // Snapshot branch not connected on this node: nothing to produce from.
+            return false;
+        case mn_consensus::ScheduleStatus::LOCAL_STATE_MISSING_FATAL:
+            // Our own state is corrupt: shared LOT 1 latch + controlled shutdown.
+            mn_consensus::HandleFatalScheduleResolution(pindexPrev->nHeight + 1,
+                                                        pindexPrev->GetBlockHash(), nullptr);
+            return false;
     }
 
     // MULTI-MN: Check if expected producer is ANY of our managed MNs
@@ -520,10 +548,10 @@ bool CActiveDeterministicMasternodeManager::IsLocalBlockProducer(const CBlockInd
         outAlignedTime = alignedTime;
         outProTxHash = expectedMn->proTxHash;
 
-        if (producerIndex > 0) {
-            LogPrintf("DMM-SCHEDULER: Local MN %s is FALLBACK producer #%d for block %d (slot=%d, alignedTime=%d)\n",
-                     outProTxHash.ToString().substr(0, 16), producerIndex, pindexPrev->nHeight + 1,
-                     slot, alignedTime);
+        if (schedRes.nRawSlot > 0) {
+            LogPrintf("DMM-SCHEDULER: Local MN %s is FALLBACK producer for block %d (rawSlot=%d, recovery=%d, alignedTime=%d)\n",
+                     outProTxHash.ToString().substr(0, 16), pindexPrev->nHeight + 1,
+                     (int)schedRes.nRawSlot, schedRes.fRecovery ? 1 : 0, alignedTime);
         } else {
             LogPrint(BCLog::MASTERNODE, "DMM-SCHEDULER: Local MN %s is PRIMARY producer for block %d\n",
                      outProTxHash.ToString().substr(0, 16), pindexPrev->nHeight + 1);
@@ -756,7 +784,7 @@ bool CActiveDeterministicMasternodeManager::TryProducingBlock(const CBlockIndex*
     CBlock* pblock = &pblocktemplate->block;
 
     // CRITICAL: Set the block's nTime to the aligned time calculated by IsLocalBlockProducer
-    // This ensures that verification (which uses GetExpectedProducer with block.nTime)
+    // This ensures that verification (which runs ResolveScheduledProducer on block.nTime)
     // produces the SAME producer as the scheduler determined.
     // Without this, there would be a mismatch between production and verification.
     pblock->nTime = nAlignedBlockTime;

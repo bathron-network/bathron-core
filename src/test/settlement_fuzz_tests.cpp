@@ -34,6 +34,7 @@
 #include "script/standard.h"
 #include "test/test_bathron.h"
 
+#include <limits>
 #include <boost/test/unit_test.hpp>
 #include <tuple>
 #include <vector>
@@ -184,8 +185,11 @@ BOOST_AUTO_TEST_CASE(fuzz_lock_unlock_conservation)
     BOOST_CHECK_EQUAL(SumVaults(), 0);              // every vault UTXO reclaimed
 }
 
-// Property 2: random per-block mint amounts. A5 conservation and the A7 cap hold
-// for well-formed steps; a broken-conservation or over-cap step is rejected.
+// Property 2: random per-block mint amounts through the INDEPENDENT A5 (LOT 8) plus
+// the A7 cap. The historical CheckA5(cur, prev) was a tautology (both terms written
+// from one local sum — it could not fail on the real path) and is deleted; this
+// property now drives CheckA5Independent, whose two deltas model the two independent
+// sources (mint outputs vs finalized burnedSats) and whose reds are REACHABLE.
 BOOST_AUTO_TEST_CASE(fuzz_supply_a5_a7)
 {
     const CAmount cap = Params().GetConsensus().nMaxMoneyOut;
@@ -198,22 +202,38 @@ BOOST_AUTO_TEST_CASE(fuzz_supply_a5_a7)
         CAmount burns = (CAmount)rng.below(1'000'000'000ULL);
         if (prev.M0_total_supply > cap - burns) burns = 0;   // stay bounded
 
+        // Honest step: the ledger-side delta equals the mint-side delta.
+        CAmount nextS = -1;
+        BOOST_REQUIRE_MESSAGE(CheckA5Independent(prev.M0_total_supply, prev.M0_total_supply,
+                                                 burns, burns, cap, vs, nextS),
+                              "A5 broke at i=" << i);
         SettlementState cur = prev;
         cur.burnclaims_block = burns;
-        cur.M0_total_supply = prev.M0_total_supply + burns;
-
-        BOOST_REQUIRE_MESSAGE(CheckA5(cur, prev, vs), "A5 broke at i=" << i);
+        cur.M0_total_supply = nextS;
+        BOOST_CHECK_EQUAL(nextS, prev.M0_total_supply + burns);
         BOOST_REQUIRE_MESSAGE(CheckA7(cur, cap, vs), "A7 broke at i=" << i);
         prev = cur;
     }
 
-    // A broken-conservation step (M0_total != prev + burns) is rejected by A5.
+    // A single-side mutation (mint outputs != finalized burns) IS rejected — the red
+    // the tautological check could never produce.
     {
-        CValidationState vs;
-        SettlementState bad = prev;
-        bad.burnclaims_block = 100;
-        bad.M0_total_supply = prev.M0_total_supply + 100 + 1;   // off by one
-        BOOST_CHECK(!CheckA5(bad, prev, vs));
+        CValidationState vs; CAmount nextS = -1;
+        BOOST_CHECK(!CheckA5Independent(prev.M0_total_supply, prev.M0_total_supply,
+                                        100 + 1, 100, cap, vs, nextS));
+        BOOST_CHECK_EQUAL(vs.GetRejectReason(), "settlement-a5-delta-mismatch");
+    }
+    // Overflow and negativity are explicit rejects, not UB.
+    {
+        CValidationState vs; CAmount nextS = -1;
+        const CAmount big = std::numeric_limits<CAmount>::max();
+        BOOST_CHECK(!CheckA5Independent(big, big, 1, 1, cap, vs, nextS));
+        BOOST_CHECK_EQUAL(vs.GetRejectReason(), "settlement-a5-overflow");
+    }
+    {
+        CValidationState vs; CAmount nextS = -1;
+        BOOST_CHECK(!CheckA5Independent(-1, -1, 0, 0, cap, vs, nextS));
+        BOOST_CHECK_EQUAL(vs.GetRejectReason(), "settlement-a5-negative");
     }
     // An over-cap step is rejected by A7.
     {

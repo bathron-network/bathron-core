@@ -9,6 +9,7 @@
 #include "validation.h"
 #include "destination_io.h"
 #include "masternode/deterministicmns.h"
+#include "masternode/lease_renewer.h"
 #include "masternode/specialtx_validation.h"
 #include "masternode/providertx.h"
 #include "key_io.h"
@@ -1049,6 +1050,86 @@ UniValue protx_update_service(const JSONRPCRequest& request)
     return SignAndSendSpecialTx(pwallet, tx, pl);
 }
 
+UniValue protx_renew_lease(const JSONRPCRequest& request)
+{
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    if (request.fHelp || request.params.empty() || request.params.size() > 2) {
+        throw std::runtime_error(
+                "protx_renew_lease \"proTxHash\" (\"operatorKey\")\n"
+                "\nCreates and sends a TX_OPERATOR_LEASE renewing the operator lease of a\n"
+                "masternode. Every identity receives a lease at registration and it EXPIRES;\n"
+                "an expired lease leaves the production set and, with it, the finality\n"
+                "population - the chain keeps producing but stops finalizing. Renewal is what\n"
+                "keeps the identity in both sets.\n"
+                "\nThe new expiry is derived by consensus from the height of the block that\n"
+                "includes this transaction (inclusionHeight + nOperatorLeaseBlocks); it is not\n"
+                "chosen here. The sequence is read from the chain and advanced by exactly one.\n"
+                "Renewing early is allowed (the horizon restarts from inclusion), and so is\n"
+                "renewing a lease that has already expired.\n"
+                "\nThe wallet pays the fee; the operator key authorizes the renewal. They need\n"
+                "not belong to the same party.\n"
+                "\nKey handling: with no second argument the key configured on this node\n"
+                "(-mnoperatorprivatekey) is used — the normal path. Passing \"operatorKey\"\n"
+                "explicitly is an ADVANCED path for payer!=operator setups: it puts key\n"
+                "material on the RPC command line (shell history, process list) and is\n"
+                "logged with a warning. Prefer the configured key.\n"
+                + HelpRequiringPassphrase(pwallet) + "\n"
+                "\nArguments:\n"
+                + GetHelpString(1, proTxHash)
+                + GetHelpString(2, operatorKey) +
+                "\nResult:\n"
+                "\"txid\"                        (string) The transaction id.\n"
+                "\nExamples:\n"
+                + HelpExampleCli("protx_renew_lease", "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"")
+                + HelpExampleRpc("protx_renew_lease", "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"")
+        );
+    }
+    CheckEvoUpgradeEnforcement();
+
+    EnsureWalletIsUnlocked(pwallet);
+    // Make sure the results are valid at least up to the most recent block
+    // the user could have gotten from another RPC command prior to now
+    pwallet->BlockUntilSyncedToCurrentChain();
+
+    const uint256 proTxHash = ParseHashV(request.params[0], "proTxHash");
+    const std::string& strOpKey = request.params.size() > 1 ? request.params[1].get_str() : "";
+
+    CKey operatorKey;
+    if (!strOpKey.empty()) {
+        // ADVANCED path (payer != operator, or a key held off-node): the key just
+        // transited the RPC command line, which shell history and process lists
+        // can see. Say so — once, loudly — instead of silently normalizing it.
+        LogPrintf("protx_renew_lease: WARNING: operator key for %s passed as an RPC argument; "
+                  "the normal path is the key configured with -mnoperatorprivatekey\n",
+                  proTxHash.ToString());
+        operatorKey = GetECDSAOperatorKey(strOpKey);
+    } else {
+        // Normal path: the key already configured on this node. Multi-MN aware —
+        // resolve the key of THIS identity, not whichever key is "active".
+        bool found = false;
+        if (activeMasternodeManager != nullptr) {
+            const CActiveMasternodeInfo* amnInfo = activeMasternodeManager->GetInfo();
+            if (amnInfo && amnInfo->GetOperatorKey(proTxHash, operatorKey)) {
+                found = true;
+            }
+        }
+        if (!found) {
+            operatorKey = GetECDSAOperatorKey("");   // single-key fallback; throws if none
+        }
+    }
+
+    uint256 txid;
+    const OperationResult res = BuildAndSendLeaseRenewal(pwallet, proTxHash, operatorKey, txid);
+    if (!res) {
+        throw JSONRPCError(RPC_MISC_ERROR, res.getError());
+    }
+    return txid.GetHex();
+}
+
 UniValue protx_update_registrar(const JSONRPCRequest& request)
 {
     CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
@@ -1233,11 +1314,22 @@ UniValue getactivemnstatus(const JSONRPCRequest& request)
                 "  \"status\": \"xxxx\",          (string) Status message\n"
                 "  \"managed_count\": n,          (numeric) Number of operator keys loaded\n"
                 "  \"produce_delay\": n,          (numeric) HA failover delay in seconds (0 = primary)\n"
+                "  \"lease_autorenew\": true|false, (boolean) Whether this node renews its leases automatically\n"
                 "  \"masternodes\": [             (array) List of managed masternodes\n"
                 "    {\n"
                 "      \"proTxHash\": \"xxxx\",   (string) ProTx hash (empty if not found on-chain yet)\n"
                 "      \"pubkey\": \"xxxx\",      (string) Operator public key (first 16 chars)\n"
-                "      \"status\": \"xxxx\"       (string) Status (active, waiting, banned, etc.)\n"
+                "      \"status\": \"xxxx\",      (string) Status (active, waiting, banned, etc.)\n"
+                "      \"leaseSequence\": n,      (numeric) Current lease sequence (next renewal must be this + 1)\n"
+                "      \"leaseExpiryHeight\": n,  (numeric) Height at which the lease expires\n"
+                "      \"leaseBlocksRemaining\": n, (numeric) Blocks left before expiry (negative = already expired)\n"
+                "      \"leaseExpired\": true|false, (boolean) True once the identity has left the production/finality sets\n"
+                "      \"leaseAutorenewStartHeight\": n, (numeric) Height at which this identity's jittered auto-renewal begins\n"
+                "      \"leaseAutorenewLastAttemptHeight\": n, (numeric, if attempted) Tip height of the last auto-renewal attempt\n"
+                "      \"leaseAutorenewLastAttemptTime\": n, (numeric, if attempted) Unix time of the last auto-renewal attempt\n"
+                "      \"leaseAutorenewLastResult\": \"xxxx\", (string, if attempted) success | pending-in-mempool | wallet-locked | no-wallet | operator-key-not-loaded | insufficient-funds | fee-below-minimum | tx-rejected | ...\n"
+                "      \"leaseAutorenewLastError\": \"xxxx\", (string, if failed) Human-readable detail of the last failure\n"
+                "      \"leaseAutorenewLastTxid\": \"xxxx\" (string, if succeeded) Txid of the last successful auto-renewal\n"
                 "    }\n"
                 "  ]\n"
                 "}\n"
@@ -1276,12 +1368,14 @@ UniValue getactivemnstatus(const JSONRPCRequest& request)
     ret.pushKV("status", activeMasternodeManager->GetStatus());
     ret.pushKV("managed_count", (int)activeMasternodeManager->GetManagedCount());
     ret.pushKV("produce_delay", activeMasternodeManager->GetProduceDelay());
+    ret.pushKV("lease_autorenew", gArgs.GetBoolArg("-leaseautorenew", DEFAULT_LEASE_AUTORENEW));
 
     // MULTI-MN v4.0: List of managed MNs
     UniValue mnArray(UniValue::VARR);
     const CActiveMasternodeInfo* info = activeMasternodeManager->GetInfo();
 
     CDeterministicMNList mnList = deterministicMNManager->GetListAtChainTip();
+    const int nTipHeight = WITH_LOCK(cs_main, return chainActive.Height(); );
 
     // List managed MNs (proTxHash -> pubKeyId)
     for (const auto& [proTxHash, pubKeyId] : info->managedMNs) {
@@ -1302,6 +1396,37 @@ UniValue getactivemnstatus(const JSONRPCRequest& request)
             mnObj.pushKV("status", "pose_banned");
         } else {
             mnObj.pushKV("status", "active");
+        }
+
+        // LOT 9 M3 — the countdown an operator actually needs to see. An expired
+        // lease removes this identity from the production AND finality sets at the
+        // next epoch snapshot, so "when does it expire" belongs next to "is it up".
+        if (dmn) {
+            const int expiry = dmn->pdmnState->nLeaseExpiryHeight;
+            mnObj.pushKV("leaseSequence", (int64_t)dmn->pdmnState->nLeaseSequence);
+            mnObj.pushKV("leaseExpiryHeight", expiry);
+            mnObj.pushKV("leaseBlocksRemaining", expiry - nTipHeight);
+            mnObj.pushKV("leaseExpired", expiry <= nTipHeight);
+            // Where this identity's deterministically-jittered auto-renewal slot
+            // opens, and how the LAST attempt went — a failing renewal must be
+            // visible here, not only in the log.
+            mnObj.pushKV("leaseAutorenewStartHeight",
+                         LeaseRenewalStartHeight(Params().GetConsensus().hashGenesisBlock,
+                                                 proTxHash,
+                                                 dmn->pdmnState->nLeaseSequence + 1, expiry,
+                                                 Params().GetConsensus().nOperatorLeaseBlocks));
+            LeaseAutoRenewStatus renewSt;
+            if (GetLeaseAutoRenewStatus(proTxHash, renewSt)) {
+                mnObj.pushKV("leaseAutorenewLastAttemptHeight", renewSt.nLastAttemptHeight);
+                mnObj.pushKV("leaseAutorenewLastAttemptTime", renewSt.nLastAttemptTime);
+                mnObj.pushKV("leaseAutorenewLastResult", renewSt.strLastReason);
+                if (!renewSt.strLastError.empty()) {
+                    mnObj.pushKV("leaseAutorenewLastError", renewSt.strLastError);
+                }
+                if (renewSt.fLastSuccess) {
+                    mnObj.pushKV("leaseAutorenewLastTxid", renewSt.lastTxid.GetHex());
+                }
+            }
         }
 
         mnArray.push_back(mnObj);
@@ -1376,6 +1501,7 @@ static const CRPCCommand commands[] =
     { "evo",         "protx_register_fund",            &protx_register_fund,    true,  {"collateralAddress","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorVrfPubKey"} },
     { "evo",         "protx_register_prepare",         &protx_register_prepare, true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorVrfPubKey"} },
     { "evo",         "protx_register_submit",          &protx_register_submit,  true,  {"tx","sig"} },
+    { "evo",         "protx_renew_lease",              &protx_renew_lease,      true,  {"proTxHash","operatorKey"} },
     { "evo",         "protx_revoke",                   &protx_revoke,           true,  {"proTxHash","operatorKey","reason"} },
     { "evo",         "protx_update_registrar",         &protx_update_registrar, true,  {"proTxHash","operatorPubKey","votingAddress","payoutAddress","ownerKey","operatorVrfPubKey"} },
     { "evo",         "protx_update_service",           &protx_update_service,   true,  {"proTxHash","ipAndPort","operatorKey"} },

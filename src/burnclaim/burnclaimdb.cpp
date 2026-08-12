@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "burnclaim/burnclaimdb.h"
+
+#include "chainparams.h"
 #include "clientversion.h"
 #include "logging.h"
 #include "util/system.h"
@@ -459,9 +461,24 @@ bool CheckBurnClaimDBConsistency(const uint256& chainTipHash, bool& fRequireRebu
 
     uint256 dbBestBlock;
     if (!g_burnclaimdb->ReadBestBlock(dbBestBlock)) {
-        // Empty DB - OK, will be populated
-        LogPrintf("Burn claim DB is empty (new or wiped)\n");
-        return true;
+        // F2 — an ABSENT marker is only benign on a FRESH chain. The marker is written by
+        // every block's own commit, so:
+        //   tip == genesis  -> nothing has committed yet: legitimately absent, PASS;
+        //   tip >  genesis  -> the marker MUST exist. Its absence means the ledger was
+        //                      wiped/lost out of band while the chain advanced — the very
+        //                      state that let a stale ledger answer `mint-unknown-claim`
+        //                      and BAN an honest peer. FAIL -> full -reindex.
+        // The caller passes the tip hash; genesis is identified against chainparams so
+        // this stays a pure function of (tip, DB) with no chainActive dependency.
+        if (chainTipHash == Params().GetConsensus().hashGenesisBlock) {
+            LogPrintf("Burn claim DB is empty at genesis (fresh chain) — OK, will be populated\n");
+            return true;
+        }
+        LogPrintf("BurnClaim DB has NO best-block marker while the chain is at %s (above "
+                  "genesis) — the ledger was wiped or lost; rebuild required\n",
+                  chainTipHash.ToString());
+        fRequireRebuild = true;
+        return false;
     }
 
     if (dbBestBlock != chainTipHash) {

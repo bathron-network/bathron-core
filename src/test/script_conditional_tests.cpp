@@ -21,7 +21,14 @@ BOOST_AUTO_TEST_CASE(create_conditional_script)
 {
     // Test CreateConditionalScript
     uint256 hashlock;
-    CSHA256().Write((unsigned char*)"test_secret_32_bytes_exactly!!", 32).Finalize(hashlock.begin());
+    // The preimage length is derived from the literal instead of hardcoded: the
+    // previous form asked Write() for 32 bytes from a literal that was only 30
+    // characters long, reading one byte past its end. ASan flagged it as a
+    // global-buffer-overflow the first time the sanitizer job ran. The
+    // static_assert keeps the name and the size from drifting apart again.
+    static constexpr char SECRET[] = "test_secret_that_is_32_bytes_ok!";
+    static_assert(sizeof(SECRET) - 1 == 32, "hashlock preimage must be exactly 32 bytes");
+    CSHA256().Write((const unsigned char*)SECRET, sizeof(SECRET) - 1).Finalize(hashlock.begin());
 
     uint32_t timelock = 150000;
 

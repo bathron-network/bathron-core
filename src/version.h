@@ -23,8 +23,16 @@ static const int PROTOCOL_VERSION = 70929;
  *   2 = Genesis clean reset (2025-01-03)
  *   3 = SPV-hardening genesis (2026-06-28): R6 bootstrap anchor, reindex-wipe,
  *       killswitch policy, dup/replay guards, corrected genesis checkpoint header
+ *   4 = Measurement-network genesis on Bitcoin Testnet4 (2026-08-05): the epoch-3
+ *       magic is the LIVE superseded network's magic (testnet5 fleet, genesis
+ *       0d241620...) — the measurement network must not share it
  */
-static const int TESTNET_EPOCH = 3;
+static const int TESTNET_EPOCH = 4;
+
+// The superseded testnet5 network runs epoch 3 and the epoch is compiled into the
+// P2P magic (chainparams.cpp): any regression re-joins its magic space. There is
+// no runtime override — the epoch is a compile-time constant on purpose.
+static_assert(TESTNET_EPOCH >= 4, "TESTNET_EPOCH must never regress below 4 (epoch 3 = superseded live testnet5 network)");
 
 //! initial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 209;

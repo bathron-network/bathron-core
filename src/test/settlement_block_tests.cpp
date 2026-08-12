@@ -178,6 +178,12 @@ struct Chain {
         idx.back().nHeight = height;
         idx.back().pprev = nullptr;
         idx.back().phashBlock = &hashes.back();
+        // LOT 7 (L6-F16): reflect the production invariant that the derived DBs' best-block
+        // marker equals the parent whose state the checks read. Without this, the new
+        // consistency gate treats the synthetic parent as "DB behind" and returns
+        // local-state-behind instead of the business-rule verdict under test.
+        if (g_settlementdb) g_settlementdb->WriteBestBlock(h);
+        if (g_htlcdb) g_htlcdb->WriteBestBlock(h);
         return &idx.back();
     }
     // append a real block index on top of `prev`

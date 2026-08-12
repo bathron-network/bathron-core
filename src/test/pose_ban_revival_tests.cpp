@@ -3,20 +3,20 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 /**
- * PoSe ban -> revival state machine (test-plan B7, tier 1).
+ * PoSe ban -> revival state machine — NON-TEMPORAL transitions only.
  *
- * 3 missed production slots -> ban from the active set; a ProUpServ resets the
- * penalty and revives. The pure anti-cascade predicate (ShouldSkipPoSePunishment)
- * and the missed-index math are already covered by bathron_dmm_finality_tests;
- * what had no coverage is the LIST-STATE machine those decisions drive: that a
- * banned MN leaves BOTH the block-producer scoring and the finality operator
- * set, and that revival puts it back. Asserted on nPoSePenalty / nPoSeBanHeight /
- * IsPoSeBanned / GetValidMNsCount / GetUniqueOperators — never on log strings
- * (the ban/revival emit no reject codes, only LogPrintf markers).
- *
- * POSE_BAN_THRESHOLD = 3 (deterministicmns.cpp).
+ * LOT 9 M2 removed the TEMPORAL PoSe system (missed-slot penalty/ban derived
+ * from block.nTime, its decay rules, and PoSeDecrease). What remains — and what
+ * this file covers — is the ban/revival LIST-STATE machine driven by the
+ * non-temporal transitions that still exist: ProRegTx with an empty service
+ * starts banned, an operator-key change or a ProUpRevTx bans, a ProUpServTx
+ * revives. The invariant under test: a banned MN leaves BOTH the schedule's
+ * eligible set and the finality operator set, and revival puts it back.
+ * Asserted on nPoSePenalty / nPoSeBanHeight / IsPoSeBanned / GetValidMNsCount /
+ * GetUniqueOperators — never on log strings.
  */
 
+#include "chainparams.h"
 #include "masternode/blockproducer.h"
 #include "masternode/deterministicmns.h"
 #include "state/quorum.h"
@@ -38,21 +38,29 @@ void MutateState(CDeterministicMNList& list, const uint256& proTx, F f)
     list.UpdateMN(proTx, st);
 }
 
-bool ScoresContain(const CBlockIndex* prev, const CDeterministicMNList& list,
-                   const uint256& proTx)
+// Membership in the schedule's eligible set — the same predicate
+// ResolveScheduledProducer applies to the epoch snapshot (valid = not banned,
+// plus bootstrap-trust or confirmedHash).
+bool EligibleContains(const CDeterministicMNList& list, const uint256& proTx)
 {
-    for (const auto& s : mn_consensus::CalculateBlockProducerScores(prev, list)) {
-        if (s.second->proTxHash == proTx) return true;
-    }
-    return false;
+    const Consensus::Params& consensus = Params().GetConsensus();
+    bool found = false;
+    list.ForEachMN(true /* onlyValid */, [&](const CDeterministicMNCPtr& dmn) {
+        const bool boot = dmn->pdmnState->nRegisteredHeight <= consensus.nDMMBootstrapHeight;
+        if (!boot && dmn->pdmnState->confirmedHash.IsNull()) return;
+        if (dmn->proTxHash == proTx) found = true;
+    });
+    return found;
 }
 
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(pose_ban_revival_tests, MultiMNFinalitySetup)
 
-// Penalty 1 and 2 are not a ban; the 3rd strike (penalty 3 + banHeight set) is.
-BOOST_AUTO_TEST_CASE(ban_only_on_third_strike)
+// A ban is the FIELD state (nPoSeBanHeight set), not a penalty count — LOT 9 M2
+// removed every temporal path that used to move the penalty, so the penalty
+// value alone never bans.
+BOOST_AUTO_TEST_CASE(penalty_alone_is_not_a_ban)
 {
     CDeterministicMNList list = BuildTestMNList(4, 1, operators);
     const uint256 proTx = operators[0].mns[0].proTxHash;
@@ -63,26 +71,26 @@ BOOST_AUTO_TEST_CASE(ban_only_on_third_strike)
     MutateState(list, proTx, [](CDeterministicMNState& s){ s.nPoSePenalty = 2; });
     BOOST_CHECK(!list.GetMN(proTx)->IsPoSeBanned());
 
-    // 3rd strike bans (the BuildNewListFromBlock loop sets nPoSeBanHeight=height
-    // once penalty reaches POSE_BAN_THRESHOLD).
-    MutateState(list, proTx, [](CDeterministicMNState& s){ s.nPoSePenalty = 3; s.nPoSeBanHeight = 500; });
+    // The ban is the banHeight stamp (BanIfNotBanned — key change / revocation /
+    // empty-service registration), never a timestamp-derived strike count.
+    MutateState(list, proTx, [](CDeterministicMNState& s){ s.BanIfNotBanned(500); });
     BOOST_CHECK(list.GetMN(proTx)->IsPoSeBanned());
     BOOST_CHECK_EQUAL(list.GetValidMNsCount(), 3U);
 }
 
-// A banned MN leaves BOTH the block-producer scoring and the finality operator
+// A banned MN leaves BOTH the schedule's eligible set and the finality operator
 // set — that is what "ban from the active set" means.
 BOOST_AUTO_TEST_CASE(banned_mn_excluded_from_active_set)
 {
     CDeterministicMNList list = BuildTestMNList(4, 1, operators);
     const uint256 proTx = operators[0].mns[0].proTxHash;
 
-    BOOST_CHECK(ScoresContain(TipIndex(), list, proTx));
+    BOOST_CHECK(EligibleContains(list, proTx));
     BOOST_CHECK_EQUAL(hu::GetUniqueOperators(list).size(), 4U);
 
-    MutateState(list, proTx, [](CDeterministicMNState& s){ s.nPoSePenalty = 3; s.nPoSeBanHeight = 500; });
+    MutateState(list, proTx, [](CDeterministicMNState& s){ s.BanIfNotBanned(500); });
 
-    BOOST_CHECK(!ScoresContain(TipIndex(), list, proTx));            // out of production
+    BOOST_CHECK(!EligibleContains(list, proTx));                     // out of production
     BOOST_CHECK_EQUAL(hu::GetUniqueOperators(list).size(), 3U);      // out of finality
 }
 
@@ -100,7 +108,7 @@ BOOST_AUTO_TEST_CASE(revival_resets_penalty_and_restores)
     });
     BOOST_CHECK(!list.GetMN(proTx)->IsPoSeBanned());
     BOOST_CHECK_EQUAL(list.GetValidMNsCount(), 4U);
-    BOOST_CHECK(ScoresContain(TipIndex(), list, proTx));
+    BOOST_CHECK(EligibleContains(list, proTx));
     BOOST_CHECK_EQUAL(hu::GetUniqueOperators(list).size(), 4U);
 }
 
@@ -112,19 +120,6 @@ BOOST_AUTO_TEST_CASE(ban_height_not_restamped)
     BOOST_CHECK_EQUAL(st.nPoSeBanHeight, 100);
     st.BanIfNotBanned(200);
     BOOST_CHECK_EQUAL(st.nPoSeBanHeight, 100);   // unchanged
-}
-
-// PoSeDecrease models the -1 when an MN produces successfully; it requires a
-// positive, un-banned penalty (never called on a banned MN).
-BOOST_AUTO_TEST_CASE(producer_success_decays_penalty)
-{
-    CDeterministicMNList list = BuildTestMNList(4, 1, operators);
-    const uint256 proTx = operators[0].mns[0].proTxHash;
-    MutateState(list, proTx, [](CDeterministicMNState& s){ s.nPoSePenalty = 2; });
-
-    list.PoSeDecrease(proTx);
-    BOOST_CHECK_EQUAL(list.GetMN(proTx)->pdmnState->nPoSePenalty, 1);
-    BOOST_CHECK(!list.GetMN(proTx)->IsPoSeBanned());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

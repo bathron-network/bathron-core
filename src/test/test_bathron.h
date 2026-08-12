@@ -46,6 +46,20 @@ static inline uint64_t InsecureRandRange(uint64_t range) { return g_insecure_ran
 static inline bool InsecureRandBool() { return g_insecure_rand_ctx.randbool(); }
 static inline std::vector<unsigned char> InsecureRandBytes(size_t len) { return g_insecure_rand_ctx.randbytes(len); }
 
+/** LOT 1 round 15 (Phase H) — test-binary shutdown accounting.
+ *
+ * The test stub of StartShutdown() RECORDS the request instead of exiting (the old
+ * stub was std::exit(0): reaching the real shutdown path silently ended the suite
+ * with rc 0 — a false green). A sentinel in ~BasicTestingSetup fails any case that
+ * leaves an unconsumed request (or the consensus-DB fatal latch) behind.
+ */
+namespace test_shutdown {
+//! Number of StartShutdown() calls recorded since the last Reset().
+int Requests();
+//! Consume the recorded requests (call after asserting them).
+void Reset();
+} // namespace test_shutdown
+
 /** Basic testing setup.
  * This just configures logging and chain parameters.
  */

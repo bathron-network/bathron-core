@@ -14,7 +14,6 @@
 #include "consensus/validation.h"
 #include "key_io.h"
 #include "guiinterface.h"
-#include "masternode/blockproducer.h"  // For GetProducerSlot, CalculateBlockProducerScores
 #include "net/netbase.h"       // For Lookup()
 #include "script/standard.h"
 #include "sync.h"
@@ -52,6 +51,12 @@ void CDeterministicMNState::ToJson(UniValue& obj) const
     obj.pushKV("PoSeRevivedHeight", nPoSeRevivedHeight);
     obj.pushKV("PoSeBanHeight", nPoSeBanHeight);
     obj.pushKV("revocationReason", nRevocationReason);
+    // LOT 9 M3 — the lease is a CONSENSUS fact that decides whether this identity
+    // is in the production and finality sets at the next epoch snapshot. It must
+    // be readable, otherwise an operator cannot see its own expiry coming and a
+    // failed renewal is invisible until finality stops.
+    obj.pushKV("leaseSequence", (int64_t)nLeaseSequence);
+    obj.pushKV("leaseExpiryHeight", nLeaseExpiryHeight);
     obj.pushKV("ownerAddress", EncodeDestination(keyIDOwner));
     obj.pushKV("operatorPubKey", HexStr(pubKeyOperator));
     if (pubKeyVRF.IsValid()) {
@@ -134,19 +139,6 @@ CDeterministicMNCPtr CDeterministicMNList::GetMNByInternalId(uint64_t internalId
         return nullptr;
     }
     return GetMN(*proTxHash);
-}
-
-void CDeterministicMNList::PoSeDecrease(const uint256& proTxHash)
-{
-    auto dmn = GetMN(proTxHash);
-    if (!dmn) {
-        throw(std::runtime_error(strprintf("%s: Can't find a masternode with proTxHash=%s", __func__, proTxHash.ToString())));
-    }
-    assert(dmn->pdmnState->nPoSePenalty > 0 && dmn->pdmnState->nPoSeBanHeight == -1);
-
-    auto newState = std::make_shared<CDeterministicMNState>(*dmn->pdmnState);
-    newState->nPoSePenalty--;
-    UpdateMN(proTxHash, newState);
 }
 
 CDeterministicMNListDiff CDeterministicMNList::BuildDiff(const CDeterministicMNList& to) const
@@ -454,18 +446,8 @@ bool CDeterministicMNManager::BuildNewListFromBlock(const CBlock& block, const C
         }
     });
 
-    // PoSe decay — two rules, height-gated (UPGRADE_POSE_PRODUCER_DECAY):
-    //  - LEGACY (pre-activation): every penalized MN decays 1 EVERY block. Because
-    //    the decay ran before the +1-per-missed-slot below, a penalty could never
-    //    exceed 1 → the 3-strike ban was mathematically unreachable (dead code).
-    //  - NEW: decay only for the MN that successfully PRODUCED this block (applied
-    //    in the PoSe section below, where the producer is resolved) — the original
-    //    design: "penalty decreases by 1 per block when MN produces successfully".
-    //    A down MN now accrues +1 per missed slot with no decay → ban at strike 3.
-    const bool fPoSeProducerDecay = consensus.IsPoSeProducerDecay(nHeight);
-    if (!fPoSeProducerDecay) {
-        DecreasePoSePenalties(newList);
-    }
+    // LOT 9 M2: the PoSe decay branch that sat here is gone with the temporal-PoSe
+    // system (see the block comment near the end of this function).
 
     // we skip the coinbase
     for (int i = 1; i < (int)block.vtx.size(); i++) {
@@ -510,6 +492,11 @@ bool CDeterministicMNManager::BuildNewListFromBlock(const CBlock& block, const C
 
             auto dmnState = std::make_shared<CDeterministicMNState>(pl);
             dmnState->nRegisteredHeight = nHeight;
+            // LOT 9 M3 — initial lease, defined AT registration (spec §C): every
+            // operator starts with a full horizon; sequence 0 so the first renewal
+            // is 1. Consensus-derived; the registrant supplies nothing.
+            dmnState->nLeaseSequence = 0;
+            dmnState->nLeaseExpiryHeight = nHeight + consensus.nOperatorLeaseBlocks;
             if (pl.addr == CService()) {
                 // start in banned pdmnState as we need to wait for a ProUpServTx
                 dmnState->nPoSeBanHeight = nHeight;
@@ -593,6 +580,30 @@ bool CDeterministicMNManager::BuildNewListFromBlock(const CBlock& block, const C
                     __func__, pl.proTxHash.ToString(), nHeight, pl.ToString());
             }
 
+        } else if (tx.nType == CTransaction::TxType::TX_OPERATOR_LEASE) {
+            // LOT 9 M3 — lease renewal. Fully validated by CheckOperatorLeaseTx
+            // (existence, confirmation, sequence, operator signature, fee) and by the
+            // per-block dedup (one renewal per proTxHash per block) BEFORE this list
+            // build runs; here the state transition is applied. The expiry is derived
+            // from the INCLUSION height — the payload carries no expiry at all.
+            OperatorLeasePL pl;
+            if (!GetTxPayload(tx, pl)) {
+                return _state.DoS(100, false, REJECT_INVALID, "bad-lease-payload");
+            }
+            CDeterministicMNCPtr dmn = newList.GetMN(pl.proTxHash);
+            if (!dmn) {
+                return _state.DoS(100, false, REJECT_INVALID, "bad-lease-protx-hash");
+            }
+            auto newState = std::make_shared<CDeterministicMNState>(*dmn->pdmnState);
+            newState->nLeaseSequence = pl.nLeaseSequence;
+            newState->nLeaseExpiryHeight = nHeight + consensus.nOperatorLeaseBlocks;
+            newList.UpdateMN(pl.proTxHash, newState);
+
+            if (debugLogs) {
+                LogPrintf("CDeterministicMNManager::%s -- MN %s lease renewed at height %d: seq=%u expiry=%d\n",
+                    __func__, pl.proTxHash.ToString(), nHeight, newState->nLeaseSequence, newState->nLeaseExpiryHeight);
+            }
+
         } else if (tx.nType == CTransaction::TxType::PROUPREV) {
             ProUpRevPL pl;
             if (!GetTxPayload(tx, pl)) {
@@ -634,113 +645,21 @@ bool CDeterministicMNManager::BuildNewListFromBlock(const CBlock& block, const C
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // BATHRON PoSe: 3-STRIKE RULE - 2 misses tolerated, BAN on 3rd miss
+    // LOT 9 M2 — TEMPORAL PoSe REMOVED. The 3-strike missed-slot penalty/ban that
+    // lived here derived its "victims" from block.nTime — a value the PRODUCER
+    // chooses — so a late (or lying) publisher could inflict penalties on peers
+    // that never actually missed anything (H-2). No consensus sanction may derive
+    // from a third party's timestamp. Late production is now just a race with no
+    // victim; slot usage stays observable OFF-consensus (logs, indexer telemetry).
+    // Exit from the active set will come from the objective lease (M3), never from
+    // a timestamp. The PoSe *fields* (nPoSePenalty/nPoSeBanHeight) remain: they
+    // still carry the NON-temporal transitions (ProRegTx with empty service starts
+    // banned, operator-key change/revocation bans, ProUpServTx revives).
     // ═══════════════════════════════════════════════════════════════════════════
-    // If a fallback producer signed this block (slot > 0), the primary producer
-    // missed their slot. Penalty progression:
-    //   - 1st miss: nPoSePenalty = 1 (warning)
-    //   - 2nd miss: nPoSePenalty = 2 (final warning)
-    //   - 3rd miss: nPoSePenalty = 3 → BAN (nPoSeBanHeight set)
-    //
-    // Fair but strict:
-    // - MNs get 2 chances for network issues, maintenance, etc.
-    // - 3rd miss = MN is unreliable → banned
-    // - Banned MNs can be revived via protx_update_service
-    // - Penalty decreases by 1 per block when MN produces successfully
-    constexpr int POSE_BAN_THRESHOLD = 3;  // Ban on 3rd miss
-
-    if (nHeight > consensus.nDMMBootstrapHeight && pindexPrev != nullptr) {
-        // Calculate producer slot from block timestamp
-        int producerSlot = mn_consensus::GetProducerSlot(pindexPrev, block.nTime);
-
-        // NEW decay rule (post-UPGRADE_POSE_PRODUCER_DECAY): the MN that produced
-        // this block did its job — decay ITS penalty by 1. Same modulo producer
-        // resolution as the validation-side check (scores over the PREVIOUS list).
-        if (fPoSeProducerDecay) {
-            auto scoresDecay = mn_consensus::CalculateBlockProducerScores(pindexPrev, oldList);
-            if (!scoresDecay.empty()) {
-                const auto& producedMn = scoresDecay[producerSlot % (int)scoresDecay.size()].second;
-                if (newList.HasMN(producedMn->proTxHash)) {
-                    auto dmnProd = newList.GetMN(producedMn->proTxHash);
-                    if (dmnProd->pdmnState->nPoSePenalty > 0 && dmnProd->pdmnState->nPoSeBanHeight == -1) {
-                        newList.PoSeDecrease(producedMn->proTxHash);
-                    }
-                }
-            }
-        }
-
-        if (producerSlot > 0) {
-            // A fallback produced this block - penalize the primary producer(s) who missed
-            auto scores = mn_consensus::CalculateBlockProducerScores(pindexPrev, oldList);
-            const auto missedIdx = mn_consensus::ComputeMissedProducerIndices(producerSlot, (int)scores.size());
-
-            // Anti-cascade guard (NEW rule only — the legacy path stays byte-identical
-            // for -reindex): skip this block's punishments when the evidence points to
-            // a NETWORK event (chain-wide-outage recovery, > 1/3 of producers "missed")
-            // rather than individual faults. Without it, 3 rocky recovery blocks would
-            // mass-ban honest MNs below the finality quorum floor while the ProUpServ
-            // revival txs need the chain to advance. See ShouldSkipPoSePunishment.
-            const int64_t dtSincePrev = (int64_t)block.GetBlockTime() - pindexPrev->GetBlockTime();
-            const bool fSkipPunish = fPoSeProducerDecay &&
-                mn_consensus::ShouldSkipPoSePunishment(dtSincePrev, consensus.nStaleChainTimeout,
-                                                       missedIdx.size(), scores.size());
-            if (fSkipPunish) {
-                LogPrintf("CDeterministicMNManager::%s -- PoSe: network-event guard at height %d — skipping %d missed-slot penalt%s (dt=%ds, missed=%d/%d producers)\n",
-                          __func__, nHeight, (int)missedIdx.size(), missedIdx.size() == 1 ? "y" : "ies",
-                          (int)dtSincePrev, (int)missedIdx.size(), (int)scores.size());
-            }
-
-            // Penalize the MNs that missed their slot, consistent with the modulo
-            // producer selection: excludes the actual producer (slot % n) and
-            // penalizes each missed MN at most once even when the slot wrapped
-            // past n (dmm-production-4 — the old raw-index loop over-penalized).
-            for (int i : fSkipPunish ? std::vector<int>{} : missedIdx) {
-                const auto& missedMn = scores[i].second;
-
-                if (!missedMn->IsPoSeBanned() && newList.HasMN(missedMn->proTxHash)) {
-                    auto dmn = newList.GetMN(missedMn->proTxHash);
-                    auto newState = std::make_shared<CDeterministicMNState>(*dmn->pdmnState);
-
-                    // Increment penalty
-                    newState->nPoSePenalty++;
-
-                    if (newState->nPoSePenalty >= POSE_BAN_THRESHOLD) {
-                        // 3rd strike = BAN
-                        newState->nPoSeBanHeight = nHeight;
-                        LogPrintf("CDeterministicMNManager::%s -- PoSe BAN: MN %s BANNED at height %d (3rd miss, slot #%d)\n",
-                                  __func__, missedMn->proTxHash.ToString().substr(0, 16), nHeight, i);
-                    } else {
-                        // Warning (1st or 2nd miss)
-                        LogPrintf("CDeterministicMNManager::%s -- PoSe WARNING: MN %s penalty %d/3 at height %d (missed slot #%d)\n",
-                                  __func__, missedMn->proTxHash.ToString().substr(0, 16), newState->nPoSePenalty, nHeight, i);
-                    }
-
-                    newList.UpdateMN(missedMn->proTxHash, newState);
-                }
-            }
-        }
-    }
 
     mnListRet = std::move(newList);
 
     return true;
-}
-
-void CDeterministicMNManager::DecreasePoSePenalties(CDeterministicMNList& mnList)
-{
-    std::vector<uint256> toDecrease;
-    toDecrease.reserve(mnList.GetValidMNsCount() / 10);
-    // only iterate and decrease for valid ones (not PoSe banned yet)
-    // if a MN ever reaches the maximum, it stays in PoSe banned state until revived
-    mnList.ForEachMN(true, [&](const CDeterministicMNCPtr& dmn) {
-        if (dmn->pdmnState->nPoSePenalty > 0 && dmn->pdmnState->nPoSeBanHeight == -1) {
-            toDecrease.emplace_back(dmn->proTxHash);
-        }
-    });
-
-    for (const auto& proTxHash : toDecrease) {
-        mnList.PoSeDecrease(proTxHash);
-    }
 }
 
 CDeterministicMNList CDeterministicMNManager::GetListForBlock(const CBlockIndex* pindex)

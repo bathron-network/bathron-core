@@ -8,7 +8,11 @@
 #include "test/test_bathron.h"
 
 #include "blockassembler.h"
+#include "btcheaders/btcheadersdb.h"   // LOT 2 sentinel: consensus-DB globals
+#include "burnclaim/burnclaimdb.h"
 #include "consensus/merkle.h"
+#include "htlc/htlcdb.h"
+#include "state/settlementdb.h"
 #include "guiinterface.h"
 #include "masternode/deterministicmns.h"
 #include "masternode/evodb.h"
@@ -21,6 +25,10 @@
 #include "streams.h"
 #include "txmempool.h"
 #include "validation.h"
+
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 #include <boost/test/unit_test.hpp>
 
@@ -69,6 +77,16 @@ BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
     ECC_Start();
     SetupEnvironment();
     InitSignatureCache();
+    // LOT 1 r15: AbortNode -> uiInterface.ThreadSafeMessageBox uses a last_value<bool>
+    // combiner, which THROWS no_slots_error with no slot connected. The daemon always
+    // connects one (noui_connect); tests must too, or the real abort path becomes
+    // untestable. Connected once per process.
+    static bool uiSlotConnected = false;
+    if (!uiSlotConnected) {
+        uiSlotConnected = true;
+        uiInterface.ThreadSafeMessageBox.connect(
+            [](const std::string&, const std::string&, unsigned int) { return false; });
+    }
     fCheckBlockIndex = true;
     SelectParams(chainName);
     SeedInsecureRand();
@@ -78,6 +96,41 @@ BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
 
 BasicTestingSetup::~BasicTestingSetup()
 {
+    // LOT 1 r15 (Phase H) — SENTINEL: if the real shutdown path or the consensus-DB
+    // fatal latch was reached during this test case and not explicitly acknowledged,
+    // the case must FAIL — the old exit(0) stub used to turn exactly this situation
+    // into a false green. Tests that legitimately exercise the abort path must assert
+    // it and then call test_shutdown::Reset() + ResetConsensusDBFatalForTests().
+    BOOST_CHECK_MESSAGE(test_shutdown::Requests() == 0,
+        "SENTINEL: StartShutdown() was requested " << test_shutdown::Requests()
+        << " time(s) during this test case and never consumed — the real shutdown "
+           "path was reached. Assert it explicitly, then test_shutdown::Reset().");
+    BOOST_CHECK_MESSAGE(!IsConsensusDBFatal(),
+        "SENTINEL: the consensus-DB fatal latch is still set at teardown — assert it "
+        "explicitly, then ResetConsensusDBFatalForTests().");
+    test_shutdown::Reset();
+    ResetConsensusDBFatalForTests();
+
+    // LOT 2 — no consensus-DB global may outlive its fixture, ENFORCED BY
+    // CONSTRUCTION rather than by assertion. This runs AFTER the derived destructor,
+    // so a well-behaved fixture has already reset what it created; this catches the
+    // rest. A survivor would otherwise be destroyed later, by the *next* fixture's
+    // assignment, pointing at the datadir this destructor is about to delete — which
+    // is precisely the `dbwrapper_error: Database I/O error` in an unrelated case
+    // that was hit while writing the LOT 2 tests.
+    //
+    // Measured, not assumed: 110 existing cases across 10 suites (settlement_tests,
+    // htlc3s_*, specialtx_rollover_*, ...) leave a global behind — they call
+    // InitSettlementDB()/InitHtlcDB() inside the case and never reset. Those DBs are
+    // in-memory, so they were harmless in practice; only an ON-DISK survivor can
+    // trigger the failure above. An assertion here would therefore condemn a
+    // pre-existing style far outside AUD-003's scope, so this resets silently
+    // instead. Verified: with this reset in place the full suite is unchanged.
+    g_burnclaimdb.reset();
+    g_settlementdb.reset();
+    g_htlcdb.reset();
+    g_btcheadersdb.reset();
+
     fs::remove_all(m_path_root);
     ECC_Stop();
     deterministicMNManager.reset();
@@ -89,6 +142,13 @@ fs::path BasicTestingSetup::SetDataDir(const std::string& name)
     fs::path ret = m_path_root / name;
     fs::create_directories(ret);
     gArgs.ForceSetArg("-datadir", ret.string());
+    // NOTE (LOT 2): deliberately NO ClearDatadirCache() here. Callers such as
+    // wallet_tests/importwallet_rescan use SetDataDir mid-test only to obtain a
+    // *path* for a file, and must NOT have the effective datadir relocated under
+    // them (doing so moves GetDataDir() away from the chain the fixture built and
+    // breaks the rescan). A fixture that genuinely wants to switch the effective
+    // datadir before opening on-disk DBs calls ClearDatadirCache() itself — see
+    // TestingSetup and P0AtomicitySetup.
     return ret;
 }
 
@@ -249,17 +309,40 @@ CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CTransaction& txn)
                            spendsCoinbase, sigOpCount);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOT 1 round 15 (Phase H) — the shutdown stubs must NEVER exit(0).
+//
+// The old stubs were `std::exit(0)`: any test that reached the REAL shutdown path
+// (e.g. AbortNode -> StartShutdown on a consensus-DB commit failure) terminated the
+// whole suite with rc 0 — a FALSE GREEN. StartShutdown now records the request in a
+// counter; the sentinel in ~BasicTestingSetup fails the current test case if the
+// request was not explicitly consumed via test_shutdown::ExpectAndClear()/Reset().
+// Shutdown(void*) (the full init teardown, which no unit test may legitimately
+// reach) aborts loudly with a NON-ZERO exit instead of a clean-looking rc 0.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static std::atomic<int> g_test_shutdown_requests{0};
+
+namespace test_shutdown {
+int Requests() { return g_test_shutdown_requests.load(); }
+void Reset() { g_test_shutdown_requests.store(0); }
+} // namespace test_shutdown
+
 [[noreturn]] void Shutdown(void* parg)
 {
-    std::exit(0);
+    std::fprintf(stderr,
+        "FATAL: unit test reached the real Shutdown() teardown path — this must never "
+        "happen in test_bathron. Aborting with a non-zero status so the run cannot "
+        "read as green.\n");
+    std::abort();
 }
 
-[[noreturn]] void StartShutdown()
+void StartShutdown()
 {
-    std::exit(0);
+    g_test_shutdown_requests.fetch_add(1);
 }
 
 bool ShutdownRequested()
 {
-  return false;
+    return g_test_shutdown_requests.load() > 0;
 }

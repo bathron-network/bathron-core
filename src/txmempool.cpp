@@ -401,6 +401,17 @@ void CTxMemPool::addUncheckedSpecialTx(const CTransaction& tx)
             break;
         }
 
+        case CTransaction::TxType::TX_OPERATOR_LEASE: {
+            // LOT 9 M3: track like the other proTx-referencing specials so
+            // existsProviderTxConflict can reject a second in-pool renewal for the
+            // same operator (only one can be block-valid: sequence must be prev+1).
+            OperatorLeasePL pl;
+            bool ok = GetTxPayload(tx, pl);
+            assert(ok);
+            mapProTxRefs.emplace(pl.proTxHash, txid);
+            break;
+        }
+
     }
 }
 
@@ -518,6 +529,14 @@ void CTxMemPool::removeUncheckedSpecialTx(const CTransaction& tx)
 
         case CTransaction::TxType::PROUPREV: {
             ProUpRevPL pl;
+            bool ok = GetTxPayload(tx, pl);
+            assert(ok);
+            eraseProTxRef(pl.proTxHash, txid);
+            break;
+        }
+
+        case CTransaction::TxType::TX_OPERATOR_LEASE: {
+            OperatorLeasePL pl;
             bool ok = GetTxPayload(tx, pl);
             assert(ok);
             eraseProTxRef(pl.proTxHash, txid);
@@ -877,6 +896,60 @@ void CTxMemPool::removeProTxConflicts(const CTransaction &tx)
             break;
         }
 
+        case CTransaction::TxType::TX_OPERATOR_LEASE: {
+            // LOT 9 final: the mined renewal advances this operator's sequence to
+            // pl.nLeaseSequence, so every in-pool renewal for the same proTxHash at
+            // a sequence <= the mined one is deterministically dead (the next block
+            // demands mined+1 and sequences only grow along a chain). That includes
+            // the competing wrapper of the SAME signed payload — same sequence,
+            // different funding/txid — which nothing else conflicts with, because
+            // the payload is deliberately decoupled from its inputs (third-party
+            // payer allowed). A HIGHER sequence is the legitimate next renewal and
+            // must survive.
+            OperatorLeasePL pl;
+            if (!GetTxPayload(tx, pl)) {
+                LogPrint(BCLog::MEMPOOL, "%s: ERROR: Invalid transaction payload, tx: %s\n", __func__, tx.ToString());
+                return;
+            }
+            removeOperatorLeasesOtherThan(pl.proTxHash, pl.nLeaseSequence + 1, txid,
+                                          MemPoolRemovalReason::CONFLICT);
+            break;
+        }
+
+    }
+}
+
+void CTxMemPool::removeOperatorLeasesOtherThan(const uint256& proTxHash, uint32_t nKeepSequence,
+                                               const uint256& skipTxHash, MemPoolRemovalReason reason)
+{
+    // After ANY lease-state change for proTxHash, exactly ONE renewal sequence is
+    // live: current+1 (= nKeepSequence). Evict every in-pool TX_OPERATOR_LEASE for
+    // this operator carrying any other sequence (except skipTxHash): a lower one
+    // is permanently dead on this chain, a higher one is premature and would
+    // poison templates / block a valid renewal's (re-)admission through
+    // existsProviderTxConflict. Re-scan to a fixed point instead of collecting
+    // iterators: removeRecursive drops descendants too (a renewal may fund the
+    // next one from its change), which mutates mapProTxRefs under us.
+    while (true) {
+        const CTransaction* victim = nullptr;
+        auto range = mapProTxRefs.equal_range(proTxHash);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (it->second == skipTxHash) continue;
+            auto poolIt = mapTx.find(it->second);
+            if (poolIt == mapTx.end()) continue;
+            const CTransaction& poolTx = poolIt->GetTx();
+            if (poolTx.nType != CTransaction::TxType::TX_OPERATOR_LEASE) continue;
+            OperatorLeasePL poolPl;
+            if (!GetTxPayload(poolTx, poolPl)) continue;
+            if (poolPl.nLeaseSequence != nKeepSequence) {
+                victim = &poolTx;
+                break;
+            }
+        }
+        if (!victim) return;
+        LogPrint(BCLog::MEMPOOL, "%s: evict operator lease %s (proTx=%s, seq!=%u)\n",
+                 __func__, victim->GetHash().ToString(), proTxHash.ToString(), nKeepSequence);
+        removeRecursive(*victim, reason);
     }
 }
 
@@ -1232,6 +1305,28 @@ bool CTxMemPool::existsProviderTxConflict(const CTransaction &tx) const
             // MULTI-MN v4.0: Operator key conflict check REMOVED
             // One operator can manage N masternodes with a SINGLE key
             // ProUpReg can now use same operator key as another MN
+            return false;
+        }
+
+        case CTransaction::TxType::TX_OPERATOR_LEASE: {
+            // LOT 9 M3: only ONE renewal per operator can be block-valid at a time
+            // (the next block accepts exactly sequence prev+1, and the block-level
+            // dedup rejects two in one block). A second in-pool renewal for the
+            // same proTxHash is therefore a guaranteed future reject — refuse it
+            // on relay so the assembler can never build an invalid block from it.
+            OperatorLeasePL pl;
+            if (!GetTxPayload(tx, pl)) {
+                LogPrint(BCLog::MEMPOOL, "%s: ERROR: Invalid transaction payload, tx: %s\n", __func__, tx.ToString());
+                return true; // can't decode payload == conflict
+            }
+            auto range = mapProTxRefs.equal_range(pl.proTxHash);
+            for (auto it = range.first; it != range.second; ++it) {
+                auto poolIt = mapTx.find(it->second);
+                if (poolIt != mapTx.end() &&
+                    poolIt->GetTx().nType == CTransaction::TxType::TX_OPERATOR_LEASE) {
+                    return true;   // another lease renewal for this operator is pending
+                }
+            }
             return false;
         }
 

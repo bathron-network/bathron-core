@@ -8,6 +8,7 @@
 #include "masternode/deterministicmns.h"
 #include "masternode/evodb.h"
 #include "masternode/evonotificationinterface.h"
+#include "masternode/lease_renewer.h"
 #include "net/net.h"
 #include "flatdb.h"
 #include "guiinterface.h"
@@ -30,6 +31,12 @@ std::string GetTierTwoHelpString(bool showDebug)
     strUsage += HelpMessageOpt("-mnconflock=<n>", strprintf("Lock masternodes collateral utxo (default: %u)", DEFAULT_MNCONFLOCK));
     strUsage += HelpMessageOpt("-mnoperatorprivatekey=<bech32>", "Set the masternode operator private key. Can be specified multiple times for Multi-MN mode. Only valid with -masternode=1.");
     strUsage += HelpMessageOpt("-mn_produce_delay=<seconds>", "Delay in seconds before producing blocks. Used for HA failover: primary=0, secondary=5, tertiary=10. ECDSA deterministic signatures ensure identical blocks. (default: 0)");
+    strUsage += HelpMessageOpt("-leaseautorenew=<n>", strprintf("Automatically renew this node's operator leases (0-1, default: %u). Renewal begins at a deterministically "
+                                                                "jittered height between half and three quarters of the lease horizon, so co-registered operators do not all "
+                                                                "broadcast at once; the latest slot still leaves a quarter of the horizon as safety margin. "
+                                                                "Requires a funded, UNLOCKED wallet on this node. When off, leases must be renewed with the protx_renew_lease RPC "
+                                                                "before they expire, or this node's identities leave the production and finality sets.", DEFAULT_LEASE_AUTORENEW));
+    strUsage += HelpMessageOpt("-leaserenewinterval=<seconds>", strprintf("Seconds between operator lease checks (default: %u)", DEFAULT_LEASE_RENEW_INTERVAL));
     if (showDebug) {
         strUsage += HelpMessageOpt("-pushversion", strprintf("Modifies the mnauth serialization if the version is lower than %d."
                                                              "testnet/regtest only; ", MNAUTH_NODE_VER_VERSION));

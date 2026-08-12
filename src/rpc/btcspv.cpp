@@ -204,7 +204,9 @@ UniValue getbtcsyncstatus(const JSONRPCRequest& request)
             "  \"headers_count\": n,           (numeric) Number of headers in DB\n"
             "  \"tip_height\": n,              (numeric) Current tip height\n"
             "  \"tip_hash\": \"hash\",         (string) Current tip hash\n"
-            "  \"network\": \"signet|mainnet\",(string) BTC network\n"
+            "  \"network\": \"testnet4|mainnet\",(string) The consensus-committed Bitcoin source network\n"
+            "  \"btc_genesis_checkpoint_height\": n, (numeric) Height of the pinned SPV starting header\n"
+            "  \"btc_genesis_checkpoint_hash\": \"hash\", (string) Hash of the pinned SPV starting header\n"
             "  \"spv_ready\": true|false,      (boolean) Whether SPV is ready for burn claims\n"
             "  \"min_supported_height\": n|null (numeric/null) Lowest BTC height for trustless burns\n"
             "}\n"
@@ -225,7 +227,15 @@ UniValue getbtcsyncstatus(const JSONRPCRequest& request)
     result.pushKV("headers_count", (int)g_btc_spv->GetHeaderCount());
     result.pushKV("tip_height", (int)g_btc_spv->GetTipHeight());
     result.pushKV("tip_hash", g_btc_spv->GetTipHash().GetHex());
-    result.pushKV("network", Params().IsTestnet() ? "signet" : "mainnet");
+    // The consensus-committed Bitcoin source (chainparams, immutable at runtime).
+    result.pushKV("network", BtcSourceNetToString(g_btc_spv->GetSourceNet()));
+    {
+        uint32_t gcpHeight = 0; uint256 gcpHash;
+        if (g_btc_spv->GetGenesisCheckpoint(gcpHeight, gcpHash)) {
+            result.pushKV("btc_genesis_checkpoint_height", (int64_t)gcpHeight);
+            result.pushKV("btc_genesis_checkpoint_hash", gcpHash.GetHex());
+        }
+    }
 
     // BP09: Expose minimum supported height for burn claim validation
     // Burns below this height cannot be verified trustlessly (checkpoint limitation)

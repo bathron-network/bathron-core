@@ -96,10 +96,17 @@ BOOST_AUTO_TEST_CASE(threshold_is_pure_function_of_N)
     BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3),
                       HuActiveFinalityThreshold(consensus, 3));
     BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 4), 3);   // ceil(2/3*4)
-    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3), 2);   // ceil(2/3*3)
+    // LOT 4 (AUD-002): N=3 < nHuQuorumSize=4 -> unreachable, not ceil(2/3*3).
+    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3), HU_FINALITY_THRESHOLD_UNREACHABLE);
     // Monotonic non-decreasing in N (a sanity pin, not a claim about the cap).
-    BOOST_CHECK_LE(HuActiveFinalityThreshold(consensus, 3),
+    // Monotonicity holds WITHIN the floor-met domain (below the floor the value is
+    // the maximum by construction, which is the intended "never satisfiable").
+    BOOST_CHECK_LE(HuActiveFinalityThreshold(consensus, 4),
                    HuActiveFinalityThreshold(consensus, 9));
+    // E-INV itself is untouched: the threshold is still a pure function of N and the
+    // consensus params — no gossip or market signal enters it.
+    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3),
+                      HuActiveFinalityThreshold(consensus, 3));
 }
 
 // ---------------------------------------------------------------------------
