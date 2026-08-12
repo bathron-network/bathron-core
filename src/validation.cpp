@@ -21,7 +21,9 @@
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
 #include "masternode/blockproducer.h"
+#include "masternode/deterministicmns.h"
 #include "masternode/evodb.h"
+#include "masternode/providertx.h"
 #include "masternode/specialtx_validation.h"
 #include "flatfile.h"
 #include "guiinterface.h"
@@ -214,6 +216,33 @@ std::set<int> setDirtyFileInfo;
  * Uses counter instead of boolean to handle recursive/nested calls correctly.
  */
 std::atomic<int> g_activating_best_chain{0};
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+// LAB/TEST-ONLY (B1). See validation.h. Compiled out of release builds entirely.
+std::function<void(LabFinalityPhase)> g_lab_finality_hook;
+std::atomic<int> g_lab_finality_phase_hits[static_cast<size_t>(LabFinalityPhase::COUNT)] = {};
+std::atomic<int> g_lab_finality_backstop_hits[static_cast<size_t>(LabFinalityBackstop::COUNT)] = {};
+std::vector<uint256> LabGetBlockIndexCandidates()
+{
+    AssertLockHeld(cs_main);
+    std::vector<uint256> out;
+    for (const CBlockIndex* bi : setBlockIndexCandidates) out.push_back(bi->GetBlockHash());
+    return out;
+}
+uint256 LabBestCandidateHash()
+{
+    AssertLockHeld(cs_main);
+    // The element FindMostWorkChain starts from — WITHOUT its side effects.
+    auto it = setBlockIndexCandidates.rbegin();
+    return it == setBlockIndexCandidates.rend() ? uint256() : (*it)->GetBlockHash();
+}
+void LabFinalityPhaseReached(LabFinalityPhase phase)
+{
+    // Count FIRST and unconditionally: reachability must be observable even when no
+    // hook is installed, so a test can prove the branch it names really executed.
+    g_lab_finality_phase_hits[static_cast<size_t>(phase)].fetch_add(1);
+    if (g_lab_finality_hook) g_lab_finality_hook(phase);
+}
+#endif
 
 CBlockIndex* FindForkInGlobalIndex(const CChain& chain, const CBlockLocator& locator)
 {
@@ -494,6 +523,27 @@ static void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool,
         if ((*it)->CreatesSettlementOutputs()) {
             mempool.removeSettlementReferences(**it, MemPoolRemovalReason::REORG);
         }
+        // LOT 9 final: same problem for operator lease renewals. The chain segment
+        // that admitted every in-pool renewal for this operator is being unwound,
+        // so their sequences were chosen against a list that no longer exists —
+        // e.g. the next renewal, premature now that this one is unmined, would
+        // both poison future templates and block THIS one's re-acceptance below
+        // through existsProviderTxConflict. Keep only the sequence the ROLLED-BACK
+        // list demands (the tip — and the manager's tip index — are already at
+        // their post-reorg position here); the disconnected renewal itself, if
+        // still valid, re-enters through the normal AcceptToMemoryPool below.
+        if ((*it)->nType == CTransaction::TxType::TX_OPERATOR_LEASE) {
+            OperatorLeasePL leasePl;
+            if (GetTxPayload(**it, leasePl)) {
+                uint32_t nKeep = 0;  // operator unknown => no live sequence, evict all
+                if (auto mn = deterministicMNManager->GetListAtChainTip().GetMN(leasePl.proTxHash)) {
+                    nKeep = mn->pdmnState->nLeaseSequence + 1;
+                }
+                mempool.removeOperatorLeasesOtherThan(leasePl.proTxHash, nKeep,
+                                                      /*skipTxHash=*/uint256(),
+                                                      MemPoolRemovalReason::REORG);
+            }
+        }
         // ignore validation errors in resurrected transactions
         CValidationState stateDummy;
         if (!fAddToMempool || (*it)->IsCoinBase() ||
@@ -670,6 +720,21 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
         }
 
         if (!CheckSpecialTx(tx, chainActive.Tip(), &view, state)) {
+            // LOT 9 final: a TX_OPERATOR_LEASE refused at ADMISSION for a sequence
+            // mismatch is overwhelmingly an honest race with block propagation —
+            // the renewal was valid when relayed and a block consumed (or, after a
+            // reorg, un-consumed) the sequence while the tx was in flight. The
+            // wrapper is permissionless (third-party payer is allowed by design),
+            // so the relaying peer proves nothing wrong by forwarding it. Keep the
+            // rejection but strip the ban score: in ConnectBlock the same reason
+            // stays DoS 100 (a BLOCK carrying a wrong sequence is invalid).
+            // recentRejects still stops re-requests of this txid.
+            if (tx.nType == CTransaction::TxType::TX_OPERATOR_LEASE &&
+                state.GetRejectReason() == "bad-lease-sequence") {
+                const std::string debugMsg = state.GetDebugMessage();
+                state = CValidationState();
+                return state.Invalid(false, REJECT_INVALID, "bad-lease-sequence", debugMsg);
+            }
             // BP-SPVMNPUB: If TX_BTC_HEADERS failed for R3-related reasons, blacklist publisher
             if (tx.nType == CTransaction::TxType::TX_BTC_HEADERS) {
                 std::string rejectReason = state.GetRejectReason();
@@ -926,6 +991,11 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
         // Settlement-aware M0/coinbase fee. Shared with ConnectBlock via
         // GetSettlementTxFee so the two can never diverge (see settlement_logic.h).
         CAmount nFees = GetSettlementTxFee(tx, nValueIn, nValueOut);
+        // LOT 9 M3: shared consensus minimum (TX_OPERATOR_LEASE) — same check as
+        // ConnectBlock, no exemption.
+        if (!CheckSettlementMinFee(tx, nFees, state)) {
+            return false;
+        }
         // Debug logging for settlement transactions
         if (tx.nType == CTransaction::TxType::TX_LOCK) {
             LogPrintf("MEMPOOL-FEE: TX_LOCK nValueIn=%lld nValueOut=%lld nFees=%lld\n",
@@ -1646,6 +1716,86 @@ static bool AbortNode(CValidationState& state, const std::string& strMessage, co
     return state.Error(strMessage);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOT 1 round 15 — consensus-DB fatal latch (AUD-017). See validation.h.
+//
+// AbortNode is (and stays) static: the ONLY thing exposed to the rest of the tree
+// is this narrow primitive, not the general abort machinery.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static std::atomic<bool> g_consensus_db_fatal{false};
+static RecursiveMutex cs_consensus_db_fatal;                      //!< guards the context below
+static ConsensusDBFatalContext g_consensus_db_fatal_ctx GUARDED_BY(cs_consensus_db_fatal);
+
+bool IsConsensusDBFatal()
+{
+    return g_consensus_db_fatal.load(std::memory_order_acquire);
+}
+
+bool GetConsensusDBFatalContext(ConsensusDBFatalContext& out)
+{
+    if (!IsConsensusDBFatal()) return false;
+    LOCK(cs_consensus_db_fatal);
+    out = g_consensus_db_fatal_ctx;
+    return true;
+}
+
+bool AbortConsensusDBState(bool fConnect, int nStep, const std::string& strDB, bool fPartial,
+                           int nHeight, const uint256& blockHash, CValidationState* stateOut)
+{
+    const std::string msg = strprintf(
+        "CONSENSUS DB FATAL (%s): %s commit failed at step %d, height=%d, block=%s. %s. "
+        "This is a LOCAL STORAGE failure, NOT an invalid block. Block processing is now "
+        "halted in this process and the node is shutting down. Restart the node; if the "
+        "startup consistency gate refuses to start, run with -reindex.",
+        fConnect ? "connect" : "disconnect", strDB, nStep, nHeight,
+        blockHash.ToString().substr(0, 16),
+        fPartial ? "PARTIAL COMMIT — some consensus DBs are ahead of others"
+                 : "Nothing was committed");
+
+    // (1) Latch FIRST, atomically. exchange() makes exactly one caller the "first".
+    // The context mutex is taken BEFORE the latch becomes visible, so any reader that
+    // observes the latch and then locks the mutex always sees the full first context
+    // (review r15 LOW: without this, a concurrent GetConsensusDBFatalContext could
+    // read an empty context in the window between exchange and the writes).
+    bool fFirst;
+    {
+        LOCK(cs_consensus_db_fatal);
+        fFirst = !g_consensus_db_fatal.exchange(true, std::memory_order_acq_rel);
+        if (fFirst) {
+            // (2) Preserve the FIRST failure's context — later calls never overwrite it.
+            g_consensus_db_fatal_ctx.fConnect = fConnect;
+            g_consensus_db_fatal_ctx.nStep = nStep;
+            g_consensus_db_fatal_ctx.strDB = strDB;
+            g_consensus_db_fatal_ctx.fPartial = fPartial;
+            g_consensus_db_fatal_ctx.nHeight = nHeight;
+            g_consensus_db_fatal_ctx.blockHash = blockHash;
+            g_consensus_db_fatal_ctx.strMessage = msg;
+        }
+    }
+    if (fFirst) {
+        // (3) The REAL abort mechanism — misc warning + fatal log + UI + shutdown
+        // request — not a reimplementation of it. Exactly once per process.
+        AbortNode(msg, _("A consensus database write failed. The node is shutting down "
+                         "to protect its state; restart it (with -reindex if instructed)."));
+    } else {
+        // Idempotent: report, but the first diagnostic and the single abort stand.
+        LogPrintf("%s (latch already set; first failure context preserved)\n", msg);
+    }
+
+    // (4) Explicitly fatal-local result: Error(), never Invalid() — no caller may
+    // turn this into BLOCK_FAILED_VALID.
+    if (stateOut) stateOut->Error(msg);
+    return false;
+}
+
+void ResetConsensusDBFatalForTests()
+{
+    g_consensus_db_fatal.store(false, std::memory_order_release);
+    LOCK(cs_consensus_db_fatal);
+    g_consensus_db_fatal_ctx = ConsensusDBFatalContext{};
+}
+
 namespace {
 
 bool UndoWriteToDisk(const CBlockUndo& blockundo, FlatFilePos& pos, const uint256& hashBlock)
@@ -1749,6 +1899,14 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, bool fJustCheck = false)
 {
     AssertLockHeld(cs_main);
+
+    // LOT 1 r15: after a consensus-DB commit failure the local storage is torn.
+    // Refuse BEFORE any read or mutation — a disconnect on top of a partially
+    // committed state would tear it further and mask the first diagnostic.
+    if (IsConsensusDBFatal()) {
+        error("%s: refused — consensus DB fatal latch is set; restart the node", __func__);
+        return DISCONNECT_FAILED;
+    }
 
     bool fDIP3Active = Params().GetConsensus().NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0);
     bool fHasBestBlock = evoDb->VerifyBestBlock(pindex->GetBlockHash());
@@ -1883,6 +2041,16 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ConnectBlock ENTER height=%d block=%s nTx=%d\n",
               pindex ? pindex->nHeight : -1, block.GetHash().ToString().substr(0, 16), block.vtx.size());
     AssertLockHeld(cs_main);
+
+    // LOT 1 r15: after a consensus-DB commit failure, connecting ANY block (this one
+    // again, or another) would re-run the apply phase on top of the committed prefix
+    // and could convert the local failure into a bogus consensus rejection of a valid
+    // block. Refuse BEFORE any read or mutation, with a NON-invalid error: no retry,
+    // no DoS, no BLOCK_FAILED_VALID. Only a process restart clears this.
+    if (IsConsensusDBFatal()) {
+        return state.Error("consensus-db-fatal: block connection refused pending restart");
+    }
+
     // Check it again in case a previous version let a bad block in
     if (!CheckBlock(block, state, !fJustCheck, !fJustCheck, !fJustCheck)) {
         if (state.CorruptionPossible()) {
@@ -1894,11 +2062,30 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         return error("%s: CheckBlock failed for %s: %s", __func__, block.GetHash().ToString(), FormatStateMessage(state));
     }
 
-    // HU Finality: Check for conflicting finalized blocks
+    // HU Finality: check for conflicting finalized blocks.
+    //
+    // LOT 6 (AUD-012 / L4-F1) — the redesign LOT 4 recorded as a follow-up is now
+    // in place, so this is state.Error, NOT DoS. History matters here: LOT 4
+    // briefly made this an Error WITHOUT the missing half and that was CRITICAL —
+    // FindMostWorkChain only evicts on BLOCK_FAILED_MASK, so the refused block
+    // stayed the best candidate forever and the ActivateBestChain false-path
+    // leaked g_activating_best_chain, halting production permanently. Both halves
+    // now exist: ActivateBestChain skips any candidate the local view refuses
+    // (LocalFinalityRefusesChain — call-scoped eviction, RAII re-insertion) and
+    // the counter is RAII-guarded across every exit. This line is therefore a
+    // RACE BACKSTOP: AcceptBlockHeader shadows it for new headers,
+    // TestBlockValidity for producer templates, and the selection filter for
+    // candidates — only a finality record landing mid-activation (signature
+    // processing does not hold cs_main) can reach it, and the next activation's
+    // filter then skips the block. Error keeps the refusal LOCAL: the view behind
+    // it is gossip-fed, non-reconstructible and wiped on -reindex (LOT 1), so it
+    // must never persist BLOCK_FAILED_VALID — that was the whole defect.
     if (pindex->pprev && pindex->phashBlock && hu::finalityHandler &&
         hu::finalityHandler->HasConflictingFinality(pindex->nHeight, pindex->GetBlockHash())) {
-        return state.DoS(10, error("%s: conflicting with HU finality", __func__), REJECT_INVALID, "bad-hu-finality");
+        error("%s: conflicting with HU finality", __func__);
+        return state.Error("hu-finality-local-conflict");
     }
+
     // verify that the view's current state corresponds to the previous block
     uint256 hashPrevBlock = pindex->pprev == nullptr ? UINT256_ZERO : pindex->pprev->GetBlockHash();
     if (hashPrevBlock != view.GetBestBlock())
@@ -1967,9 +2154,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             // (A5/A6/A7), so no invariant is affected. Regtest maturity for
             // genesis-height coins is already skipped (see the bSkipMaturity
             // "Genesis (0) ... immediately spendable" paths).
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+            // LOT 9 M4: compile-gated with the premine itself — a release build has
+            // no premine outputs to credit, so it must not carry the crediting path
+            // either (the mechanism, not just the data, stays out of the binary).
             if (Params().NetworkIDString() == CBaseChainParams::REGTEST && !block.vtx.empty()) {
                 AddCoins(view, *block.vtx[0], 0, /*check=*/false);
             }
+#endif
             view.SetBestBlock(pindex->GetBlockHash());
         }
         return true;
@@ -2157,6 +2349,12 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             // A divergence here previously made TX_UNLOCK blocks fail bad-cb-amount
             // (honest producer) / mint un-backed M0 into the coinbase (malicious one).
             CAmount txFee = GetSettlementTxFee(tx, txValueIn, txValueOut);
+
+            // LOT 9 M3: shared consensus minimum (TX_OPERATOR_LEASE) — same check
+            // as mempool acceptance, no exemption.
+            if (!CheckSettlementMinFee(tx, txFee, state)) {
+                return false;
+            }
 
             nFees += txFee;
 
@@ -2480,11 +2678,16 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
     CBlockIndex* pindexDelete = chainActive.Tip();
     assert(pindexDelete);
 
-    // HU FINALITY PROTECTION: Cannot disconnect blocks with HU finality
+    // HU FINALITY PROTECTION: cannot disconnect a locally finalized block.
+    // LOT 6 (AUD-012): RACE BACKSTOP (see ActivateBestChainStep) — the selection
+    // filter's disconnect side uses the UNION handler∪DB, a superset of this
+    // handler-only check, so on the activation path this only fires on a
+    // mid-activation view change. Error, not DoS: local policy, no persisted
+    // status, no peer scoring, no wedge (filter blocks the retry).
     if (hu::finalityHandler && hu::finalityHandler->HasFinality(pindexDelete->nHeight, pindexDelete->GetBlockHash())) {
-        return state.DoS(100, error("%s: Cannot disconnect block %s at height %d - has HU finality",
-                                    __func__, pindexDelete->GetBlockHash().ToString(), pindexDelete->nHeight),
-                         REJECT_INVALID, "hu-finality-protected");
+        error("%s: Cannot disconnect block %s at height %d - has HU finality",
+              __func__, pindexDelete->GetBlockHash().ToString(), pindexDelete->nHeight);
+        return state.Error("hu-finality-protected");
     }
 
     // Read block from disk.
@@ -2763,32 +2966,111 @@ static void PruneBlockIndexCandidates()
 }
 
 /**
+ * LOT 6 (AUD-012) — is `state` a refusal grounded in the node's LOCAL finality view?
+ *
+ * Those refusals are state.Error so they never persist BLOCK_FAILED_VALID, but
+ * MODE_ERROR is otherwise the "disk full / database broken" channel, and callers
+ * treat that channel as fatal: ActivateBestChainStep turns a DisconnectTip failure
+ * into AbortNode() -> StartShutdown(), and node/init.cpp shuts the node down when
+ * ActivateBestChain returns false. Routing a gossip-fed policy refusal into either
+ * would be a WORSE outcome than the persisted mark this lot removes — an
+ * independent review caught exactly that. So local-finality refusals are tagged by
+ * reject reason and handled as what they are: "do not follow this chain right now".
+ */
+static bool IsLocalFinalityRefusal(const CValidationState& state)
+{
+    if (!state.IsError()) return false;
+    const std::string& reason = state.GetRejectReason();
+    return reason == "hu-finality-local-conflict" ||
+           reason == "hu-finality-local-reorg-refused" ||
+           reason == "hu-finality-protected";
+}
+
+/**
  * Try to make some progress towards making pindexMostWork the active block.
  * pblock is either nullptr or a pointer to a CBlock corresponding to pindexMostWork.
  */
-static bool ActivateBestChainStep(CValidationState& state, CBlockIndex* pindexMostWork, const std::shared_ptr<const CBlock>& pblock, bool& fInvalidFound, ConnectTrace& connectTrace) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+static bool ActivateBestChainStep(CValidationState& state, CBlockIndex* pindexMostWork, const std::shared_ptr<const CBlock>& pblock, bool& fInvalidFound, bool& fLocalFinalityRefused, ConnectTrace& connectTrace) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(mempool.cs);
+
+    // LOT 1 r15: fatal latch — no new connect/disconnect attempt of any kind. This is
+    // the check that stops ActivateBestChain from RETRYING the same block after a
+    // partial commit (StartShutdown alone is asynchronous and does not).
+    if (IsConsensusDBFatal()) {
+        return state.Error("consensus-db-fatal: refusing to update the chain pending restart");
+    }
+
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+    // Phase 1: after the caller's candidate filter, before the DB-based reorg backstop.
+    LabFinalityPhaseReached(LabFinalityPhase::AFTER_FILTER);
+#endif
+
     const CBlockIndex* pindexOldTip = chainActive.Tip();
     const CBlockIndex* pindexFork = chainActive.FindFork(pindexMostWork);
 
-    // BATHRON HU FINALITY: Check if this reorg would violate finality (BFT guarantee)
-    // Per BLUEPRINT: NEVER reorg below lastFinalizedHeight
+    // BATHRON HU FINALITY: never reorg below a locally finalized block.
+    // LOT 6 (AUD-012): RACE BACKSTOP, normally unreachable — ActivateBestChain's
+    // candidate filter (LocalFinalityRefusesChain, a strict SUPERSET of this
+    // predicate) already skipped any candidate this would refuse; only a finality
+    // record landing between the filter and this line (signature processing does
+    // not hold cs_main) can trip it. state.Error, NOT DoS: the refusal is local
+    // policy over a gossip-fed view — it must never look like consensus
+    // invalidity, never reach InvalidBlockFound, and never score a peer. The
+    // false return does not wedge: the counter is RAII-guarded (L4-F5) and the
+    // next activation's filter skips this candidate.
     if (pindexFork && chainActive.Tip() && pindexFork != chainActive.Tip()) {
         if (hu::WouldViolateHuFinality(pindexMostWork, pindexFork)) {
-            return state.DoS(100, error("%s: HU Finality violation - cannot reorg past finalized block",
-                                        __func__), REJECT_INVALID, "bad-hu-finality-reorg");
+            // Logged unconditionally: AUD-012's own complaint is that operators see
+            // a silent stall instead of a diagnosable rejection, and this state is
+            // usually discarded by the caller.
+            LogPrintf("%s: HU finality refuses this reorg (local view)\n", __func__);
+            // RETURN TRUE, not false. A false here propagates to ActivateBestChain's
+            // `return false`, and node/init.cpp answers that with StartShutdown() —
+            // a gossip-fed, -reindex-wipeable view must never shut the node down. The
+            // caller evicts this candidate and re-picks, which BOUNDS the retry by
+            // the candidate set instead of relying on the filter agreeing next pass.
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+            g_lab_finality_backstop_hits[static_cast<size_t>(LabFinalityBackstop::REORG)].fetch_add(1);
+#endif
+            fLocalFinalityRefused = true;
+            return true;
         }
     }
 
     // Disconnect active blocks which are no longer in the best chain.
     bool fBlocksDisconnected = false;
     DisconnectedBlockTransactions disconnectpool;
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+    // Phase 2: the DB-based reorg backstop did NOT fire; DisconnectTip's handler-based
+    // check is next. Only a change made HERE can reach it.
+    if (chainActive.Tip() && chainActive.Tip() != pindexFork) {
+        LabFinalityPhaseReached(LabFinalityPhase::BEFORE_DISCONNECT);
+    }
+#endif
     while (chainActive.Tip() && chainActive.Tip() != pindexFork) {
         if (!DisconnectTip(state, Params(), &disconnectpool)) {
-            // This is likely a fatal error, but keep the mempool consistent,
-            // just in case. Only remove from the mempool in this case.
+            // LOT 6: a LOCAL finality refusal is not a system failure. Aborting here
+            // would let a gossip-fed, -reindex-wipeable view call StartShutdown() —
+            // strictly worse than the persisted mark this lot removes. Keep the
+            // transactions (the disconnect did not happen), stay on the current
+            // chain, and let the next activation's filter skip the candidate.
+            if (IsLocalFinalityRefusal(state)) {
+                // The disconnect did not happen (the guard precedes every mutation),
+                // so keep the transactions and stay where we are. TRUE, not false:
+                // false reaches ActivateBestChain's `return false` and therefore
+                // node/init.cpp's StartShutdown(). The caller evicts the candidate.
+                UpdateMempoolForReorg(disconnectpool, true);
+                LogPrintf("%s: local finality refuses this reorg; keeping the current chain\n", __func__);
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+            g_lab_finality_backstop_hits[static_cast<size_t>(LabFinalityBackstop::DISCONNECT)].fetch_add(1);
+#endif
+                state = CValidationState();
+                fLocalFinalityRefused = true;
+                return true;
+            }
+            // Any OTHER failure to disconnect really is a local system failure.
             UpdateMempoolForReorg(disconnectpool, false);
 
             // If we're unable to disconnect a block during normal operation,
@@ -2816,6 +3098,13 @@ static bool ActivateBestChainStep(CValidationState& state, CBlockIndex* pindexMo
         }
         nHeight = nTargetHeight;
 
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+        // Phase 3: the disconnect loop completed; ConnectBlock's conflicting-height
+        // check is next. Only a change made HERE can reach it.
+        if (!vpindexToConnect.empty()) {
+            LabFinalityPhaseReached(LabFinalityPhase::BEFORE_CONNECT);
+        }
+#endif
         // Connect new blocks.
         LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep connecting %d blocks\n", vpindexToConnect.size());
         for (CBlockIndex* pindexConnect : reverse_iterate(vpindexToConnect)) {
@@ -2828,6 +3117,21 @@ static bool ActivateBestChainStep(CValidationState& state, CBlockIndex* pindexMo
                     }
                     state = CValidationState();
                     fInvalidFound = true;
+                    fContinue = false;
+                    break;
+                } else if (IsLocalFinalityRefusal(state)) {
+                    // LOT 6: NOT a system error. Returning false here would drop the
+                    // disconnected transactions AND make ActivateBestChain return
+                    // false, which node/init.cpp answers with StartShutdown(). Stop
+                    // extending this branch, keep the mempool, and report success:
+                    // the next FindMostWorkChain pass filters this candidate out.
+                    LogPrintf("%s: local finality refuses candidate at height %d; stopping here\n",
+                              __func__, pindexConnect->nHeight);
+                    state = CValidationState();
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+            g_lab_finality_backstop_hits[static_cast<size_t>(LabFinalityBackstop::CONNECT)].fetch_add(1);
+#endif
+                    fLocalFinalityRefused = true;
                     fContinue = false;
                     break;
                 } else {
@@ -2879,9 +3183,19 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
     AssertLockNotHeld(cs_main);
     LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain ENTER block=%s\n", pblock ? pblock->GetHash().ToString().substr(0, 16) : "null");
 
-    // Increment counter to prevent DMM from producing while we're syncing
-    // Uses counter to handle recursive/nested calls correctly
-    g_activating_best_chain.fetch_add(1);
+    // Increment counter to prevent DMM from producing while we're syncing.
+    // LOT 6 (L4-F5): RAII — the decrement MUST cover every exit. Before this
+    // guard, three exit classes leaked or corrupted the counter: the
+    // ActivateBestChainStep-failure `return false` had NO decrement (leak → the
+    // producer gate in activemasternode stays closed forever), the
+    // no-blocks-connected early return did `store(false)` (CLOBBERS to zero,
+    // reopening the gate while a concurrent activation is still running), and
+    // boost::this_thread::interruption_point() below can THROW straight through
+    // the function. A scope guard is the only shape that covers all three.
+    struct ActivatingBestChainGuard {
+        ActivatingBestChainGuard() { g_activating_best_chain.fetch_add(1); }
+        ~ActivatingBestChainGuard() { g_activating_best_chain.fetch_sub(1); }
+    } activating_guard;
 
     // ABC maintains a fair degree of expensive-to-calculate internal state
     // because this function periodically releases cs_main so that it does not lock up other threads for too long
@@ -2893,6 +3207,14 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
 
     CBlockIndex* pindexNewTip = nullptr;
     CBlockIndex* pindexMostWork = nullptr;
+    // LOT 6: candidates a backstop refused during THIS call. Purely local, purely
+    // call-scoped (it dies with the function), and it is what makes the retry
+    // BOUNDED: the per-hold eviction below is undone by its RAII destructor when
+    // cs_main is released, so without this set the next outer iteration would
+    // re-select the same candidate and termination would rest entirely on the
+    // filter and the backstop agreeing — which an independent review correctly
+    // refused to accept as a structural guarantee.
+    std::set<const CBlockIndex*> refusedThisCall;
     do {
         LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain loop iteration start\n");
         boost::this_thread::interruption_point();
@@ -2915,6 +3237,43 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
             LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChain got mempool.cs\n");
             CBlockIndex* starting_tip = chainActive.Tip();
             bool blocks_connected = false;
+
+            // LOT 6 (AUD-012 / L4-F1) — CALL-SCOPED eviction of candidates the LOCAL
+            // finality view refuses. The refusal is local policy (gossip-fed view,
+            // wiped on -reindex), so it must neither mark the candidate invalid nor
+            // fail the activation (state.Error here wedged the node — LOT 4). Instead
+            // the candidate is removed from setBlockIndexCandidates FOR THIS cs_main
+            // HOLD ONLY and FindMostWorkChain is re-run; the destructor re-inserts
+            // everything and prunes BEFORE the lock is released, so the
+            // CheckBlockIndex invariant (every valid block sorting >= tip is in the
+            // set) holds at every observation point, and NOTHING survives the call:
+            // re-admission on a view change is not bookkeeping, it is the fact that
+            // every activation re-evaluates every candidate against the current view.
+            // (In-process the view only GROWS — finality is never retracted — so
+            // growth can only block more, never unblock; the view SHRINKS only via
+            // -reindex/restart, where candidates are rebuilt and re-filtered anyway.)
+            struct ScopedFinalityEviction {
+                std::vector<CBlockIndex*> evicted;
+                void Evict(CBlockIndex* pindex)
+                {
+                    if (setBlockIndexCandidates.erase(pindex)) {
+                        evicted.push_back(pindex);
+                    }
+                }
+                ~ScopedFinalityEviction()
+                {
+                    for (CBlockIndex* pindex : evicted) {
+                        // Blocks that gained BLOCK_FAILED_MASK meanwhile are handled
+                        // by FindMostWorkChain on the next pass; re-inserting keeps
+                        // the CheckBlockIndex membership invariant intact.
+                        setBlockIndexCandidates.insert(pindex);
+                    }
+                    if (!evicted.empty() && chainActive.Tip() != nullptr) {
+                        PruneBlockIndexCandidates();
+                    }
+                }
+            } finality_eviction;
+
             do {
                 // We absolutely may not unlock cs_main until we've made forward progress
                 // (with the exception of shutdown due to hardware issues, low disk space, etc).
@@ -2923,6 +3282,31 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
                 if (pindexMostWork == nullptr) {
                     pindexMostWork = FindMostWorkChain();
                 }
+                {
+                    // LOT 6: skip candidates the local finality view refuses. Each
+                    // refused candidate is evicted for this call only and the next
+                    // best is tried; the loop is bounded by the (finite) candidate
+                    // set, and terminates at worst on the current tip. The refusal
+                    // predicate is the UNION of every downstream backstop's
+                    // predicate (see finality.h) — a filter narrower than a
+                    // backstop would re-admit a candidate the backstop then refuses
+                    // on every retry, which is the spin this design removes.
+                    //
+                    // RUN ON EVERY PASS, not only when pindexMostWork was just
+                    // recomputed: pindexMostWork is declared outside the outer
+                    // do-while and survives across iterations, and cs_main IS
+                    // released between them. Gating this on `pindexMostWork ==
+                    // nullptr` (the first version) left an unlocked window per
+                    // connected batch in which a candidate could be activated
+                    // unfiltered — an independent review found it, and it is what
+                    // made the ConnectBlock backstop reachable in normal operation.
+                    while (pindexMostWork != nullptr && pindexMostWork != chainActive.Tip() &&
+                           (refusedThisCall.count(pindexMostWork) ||
+                            hu::LocalFinalityRefusesChain(pindexMostWork, chainActive.FindFork(pindexMostWork)))) {
+                        finality_eviction.Evict(pindexMostWork);
+                        pindexMostWork = FindMostWorkChain();
+                    }
+                }
 
                 // Whether we have anything to do at all.
                 if (pindexMostWork == nullptr || pindexMostWork == chainActive.Tip()) {
@@ -2930,14 +3314,39 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
                 }
 
                 bool fInvalidFound = false;
+                // LOT 6: set when a step stopped because the LOCAL finality view
+                // refused this candidate. It is NOT a failure — see below.
+                bool fLocalFinalityRefused = false;
                 std::shared_ptr<const CBlock> nullBlockPtr;
                 LogPrint(BCLog::VALIDATION, "DEBUG-HANG: Calling ActivateBestChainStep (mostWork=%d)...\n", pindexMostWork ? pindexMostWork->nHeight : -1);
-                if (!ActivateBestChainStep(state, pindexMostWork, pblock && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullBlockPtr, fInvalidFound, connectTrace)) {
+                if (!ActivateBestChainStep(state, pindexMostWork, pblock && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullBlockPtr, fInvalidFound, fLocalFinalityRefused, connectTrace)) {
                     LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep FAILED\n");
                     return false;
                 }
                 LogPrint(BCLog::VALIDATION, "DEBUG-HANG: ActivateBestChainStep returned OK\n");
                 blocks_connected = true;
+
+                if (fLocalFinalityRefused) {
+                    // A backstop fired between the filter and the step (finality is
+                    // written without cs_main). Remember the refusal FOR THIS CALL,
+                    // evict for this hold, and re-pick — bounded by the candidate set.
+                    //
+                    // DO NOT `continue` HERE. A `continue` in this do-while jumps to
+                    // its condition, which is false whenever the tip did not move
+                    // backwards, so the loop EXITS with pindexNewTip still nullptr —
+                    // and `blocks_connected` is already true, so control reaches the
+                    // notification block and calls UpdatedBlockTip(nullptr, ...),
+                    // which PeerLogicValidation::UpdatedBlockTip dereferences
+                    // immediately (net_processing.cpp). A `continue` also discards
+                    // connectTrace, so blocks connected earlier in this step would
+                    // never reach BlockConnected — the wallet would miss them,
+                    // including its Sapling witness update. An independent review
+                    // caught both: the first version of this branch turned a clean
+                    // shutdown into a crash. Falling through is the fix.
+                    refusedThisCall.insert(pindexMostWork);
+                    finality_eviction.Evict(pindexMostWork);
+                    pindexMostWork = nullptr;
+                }
 
                 if (fInvalidFound) {
                     // Wipe cache, we may need another branch now.
@@ -2951,7 +3360,9 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
                 }
             } while (!chainActive.Tip() || (starting_tip && CBlockIndexWorkComparator()(chainActive.Tip(), starting_tip)));
             if (!blocks_connected) {
-                g_activating_best_chain.store(false);
+                // LOT 6 (L4-F5): the old `g_activating_best_chain.store(false)` here
+                // CLOBBERED the counter to zero — under a concurrent activation the
+                // producer gate reopened mid-activation. The RAII guard decrements.
                 return true;
             }
 
@@ -2981,58 +3392,151 @@ bool ActivateBestChain(CValidationState& state, std::shared_ptr<const CBlock> pb
 
     // Write changes periodically to disk, after relay.
     if (!FlushStateToDisk(state, FLUSH_STATE_PERIODIC)) {
-        g_activating_best_chain.fetch_sub(1);
-        return false;
+        return false;   // LOT 6: counter released by the RAII guard
     }
 
-    g_activating_best_chain.fetch_sub(1);
     return true;
+}
+
+/**
+ * Re-admit every block that is valid, has data, and does not sort below the current
+ * tip. InvalidateBlock needs this on its SUCCESS path (the new best tip may have been
+ * pruned out) and, since r4 defers the marking, on EVERY FAILURE path too: without a
+ * BLOCK_FAILED_VALID bit to set pindexFirstInvalid, CheckBlockIndex asserts on any
+ * peeled-but-unmarked block that is missing from the set.
+ */
+static void ReAddBlockIndexCandidates() EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    for (const auto& entry : mapBlockIndex) {
+        CBlockIndex* bi = entry.second;
+        if (bi->IsValid(BLOCK_VALID_TRANSACTIONS) && bi->nChainTx &&
+            !setBlockIndexCandidates.value_comp()(bi, chainActive.Tip())) {
+            setBlockIndexCandidates.insert(bi);
+        }
+    }
 }
 
 bool InvalidateBlock(CValidationState& state, const CChainParams& chainparams, CBlockIndex* pindex)
 {
     AssertLockHeld(cs_main);
 
-    // HU FINALITY PROTECTION: Cannot invalidate/reorg blocks with HU finality
-    // This is the ONLY place where HU prevents chain changes - block production is never blocked
-    if (hu::finalityHandler && hu::finalityHandler->HasFinality(pindex->nHeight, pindex->GetBlockHash())) {
-        return state.DoS(100, error("%s: Cannot invalidate block %s at height %d - has HU finality",
-                                    __func__, pindex->GetBlockHash().ToString(), pindex->nHeight),
-                         REJECT_INVALID, "hu-finality-protected");
+    // HU FINALITY PROTECTION: cannot invalidate a locally finalized block.
+    // LOT 6 (AUD-012): Error, not DoS — this is an RPC-facing refusal grounded in
+    // the LOCAL finality view; a DoS(100) here misdescribed local policy as
+    // consensus invalidity (nothing was persisted either way, but the state mode
+    // and reject code leaked into RPC errors as if the block were invalid).
+    // B3 (LOT 6 r2) — ONE guard, over the WHOLE span, through the UNION predicate,
+    // and BEFORE any status is written.
+    //
+    // The previous shape was two narrower guards: the in-memory handler on `pindex`
+    // alone, then the DB over the span. Neither covered "handler-final but not yet
+    // in the DB, strictly between pindex and the tip" — and DisconnectTip checks
+    // exactly that, per block, as it walks. So such a block passed both guards,
+    // BLOCK_FAILED_VALID and BLOCK_FAILED_CHILD were ALREADY persisted for pindex
+    // and for every block walked so far, and DisconnectTip then refused: a
+    // persistent consensus status whose extent was decided by a gossip-fed,
+    // -reindex-wipeable local view. That is the AUD-012 defect itself, surviving
+    // inside the fix for AUD-012 (an independent review flagged it).
+    //
+    // BlockHasLocalFinality is handler UNION DB, so this guard is a strict superset
+    // of DisconnectTip's per-block check: once it passes, no local-finality refusal
+    // can fire inside the disconnect loop, so no partial marking is reachable.
+    for (const CBlockIndex* walk = chainActive.Contains(pindex) ? chainActive.Tip() : pindex;
+         walk != nullptr; walk = walk->pprev) {
+        if (hu::BlockHasLocalFinality(walk)) {
+            error("%s: Cannot invalidate block %s at height %d - the disconnect span "
+                  "contains locally finalized block %s at height %d",
+                  __func__, pindex->GetBlockHash().ToString(), pindex->nHeight,
+                  walk->GetBlockHash().ToString(), walk->nHeight);
+            return state.Error("hu-finality-protected");
+        }
+        if (walk == pindex) break;   // span is [pindex .. tip]; stop at the bottom
     }
 
-    // hu-finality-4: the in-memory check above only covers `pindex` itself. Invalidating
-    // it disconnects the WHOLE span [pindex .. tip], so guard the full span against the
-    // authoritative finality DB (pFinalityDB) — this also catches the post-restart case
-    // where the in-memory handler is empty but the DB still records the finality.
-    if (chainActive.Contains(pindex) &&
-        hu::WouldViolateHuFinality(pindex, pindex->pprev)) {
-        return state.DoS(100, error("%s: Cannot invalidate block %s at height %d - disconnect "
-                                    "span contains an HU-finalized block",
-                                    __func__, pindex->GetBlockHash().ToString(), pindex->nHeight),
-                         REJECT_INVALID, "hu-finality-protected");
-    }
-
-    // Mark the block itself as invalid.
-    pindex->nStatus |= BLOCK_FAILED_VALID;
-    setDirtyBlockIndex.insert(pindex);
-    setBlockIndexCandidates.erase(pindex);
+    // B3 (LOT 6 r4) — ALL-OR-NOTHING: not a single BLOCK_FAILED_* bit is written until
+    // EVERY disconnect has succeeded.
+    //
+    // The r2/r3 shape marked as it walked, and the pre-flight guard above was a
+    // superset of DisconnectTip's PREDICATE but not of its EVALUATION TIME: the guard
+    // runs once, the loop then does N disk reads and flushes, and the finality writer
+    // is deliberately lock-free (net_processing.cpp: "the normal (valid) path stays
+    // lock-free as designed"), so a block in the span can cross threshold AFTER the
+    // guard. A final independent review demonstrated the outcome: BLOCK_FAILED_VALID
+    // on pindex, BLOCK_FAILED_CHILD on the blocks already walked, the chain stopped
+    // mid-rollback with its tip marked and erased from the candidate set — persistent
+    // consensus status whose extent was decided by a gossip-fed, -reindex-wipeable
+    // view, which is the AUD-012 defect itself.
+    //
+    // Pinning the view for the whole operation was considered and REJECTED on lock
+    // order: InvalidateBlock holds cs_main, so taking finalityHandler->cs here gives
+    // cs_main -> cs, while AddSignature holds cs and takes cs_main on a context-cache
+    // miss — an AB/BA deadlock (see doc/DESIGN-LOT6-R4-B3.md).
+    //
+    // Deferring the marking does not make a mid-loop refusal impossible; it makes it
+    // HARMLESS. On failure nothing was marked, nothing was erased from the candidate
+    // set, and the disconnected blocks are still valid with data — so the next
+    // ActivateBestChain simply re-selects and reconnects them. The chain restores
+    // itself with no operator action, and the RPC keeps a semantics operators can
+    // rely on: invalidateblock either invalidates the whole span, or leaves the node
+    // exactly as it found it.
+    //
+    // Marking is safe to defer because cs_main is held for the whole function: no
+    // other thread can run ActivateBestChain and re-select the chain we are peeling.
+    std::vector<CBlockIndex*> vToMarkChild;
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+    LabFinalityPhaseReached(LabFinalityPhase::INV_AFTER_PREFLIGHT);
+#endif
 
     LOCK(mempool.cs); // Lock for as long as disconnectpool is in scope to make sure UpdateMempoolForReorg is called after DisconnectTip without unlocking in between
     DisconnectedBlockTransactions disconnectpool;
     while (chainActive.Contains(pindex)) {
         CBlockIndex* pindexWalk = chainActive.Tip();
-        pindexWalk->nStatus |= BLOCK_FAILED_CHILD;
-        setDirtyBlockIndex.insert(pindexWalk);
-        setBlockIndexCandidates.erase(pindexWalk);
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+        LabFinalityPhaseReached(vToMarkChild.empty()
+                                    ? LabFinalityPhase::INV_BEFORE_FIRST_DISCONNECT
+                                    : LabFinalityPhase::INV_BETWEEN_DISCONNECTS);
+#endif
         // ActivateBestChain considers blocks already in chainActive
         // unconditionally valid already, so force disconnect away from it.
         if (!DisconnectTip(state, chainparams, &disconnectpool)) {
+            // r4 FIX (independent review, HIGH-1). Deferring the marking is not enough
+            // on its own: the post-loop "add it again" scan is what keeps
+            // setBlockIndexCandidates consistent, and it only runs on success. With
+            // nothing marked, CheckBlockIndex's `assert(setBlockIndexCandidates.count(
+            // pindex))` — guarded by pindexFirstInvalid, which BLOCK_FAILED_VALID used
+            // to set — fires on the next header for any block we peeled off but did not
+            // re-admit. The old code was accidentally safe here BECAUSE it marked
+            // eagerly; removing the marking removed that accident. So restore the
+            // candidate set explicitly before every failure return.
+            ReAddBlockIndexCandidates();
+            if (IsLocalFinalityRefusal(state)) {
+                // Reachable, contrary to what r2/r3 claimed: the view can change after
+                // the pre-flight. Nothing was marked, and the candidate set is whole,
+                // so the next ActivateBestChain simply reconnects what we peeled.
+                LogPrintf("%s: local finality refused a disconnect mid-span; nothing was "
+                          "marked, the chain will re-activate on its own\n", __func__);
+                UpdateMempoolForReorg(disconnectpool, true);
+                return false;
+            }
             // It's probably hopeless to try to make the mempool consistent
             // here if DisconnectTip failed, but we can try.
             UpdateMempoolForReorg(disconnectpool, false);
             return false;
         }
+        vToMarkChild.push_back(pindexWalk);
+    }
+
+#ifdef BATHRON_ENABLE_LAB_FINALITY_HOOK
+    LabFinalityPhaseReached(LabFinalityPhase::INV_BEFORE_MARKING);
+#endif
+    // Every disconnect succeeded. NOW the status is written, in one go.
+    pindex->nStatus |= BLOCK_FAILED_VALID;
+    setDirtyBlockIndex.insert(pindex);
+    setBlockIndexCandidates.erase(pindex);
+    for (CBlockIndex* pindexWalk : vToMarkChild) {
+        pindexWalk->nStatus |= BLOCK_FAILED_CHILD;
+        setDirtyBlockIndex.insert(pindexWalk);
+        setBlockIndexCandidates.erase(pindexWalk);
     }
 
     // DisconnectTip will add transactions to disconnectpool; try to add these
@@ -3041,13 +3545,7 @@ bool InvalidateBlock(CValidationState& state, const CChainParams& chainparams, C
 
     // The resulting new best tip may not be in setBlockIndexCandidates anymore, so
     // add it again.
-    BlockMap::iterator it = mapBlockIndex.begin();
-    while (it != mapBlockIndex.end()) {
-        if (it->second->IsValid(BLOCK_VALID_TRANSACTIONS) && it->second->nChainTx && !setBlockIndexCandidates.value_comp()(it->second, chainActive.Tip())) {
-            setBlockIndexCandidates.insert(it->second);
-        }
-        it++;
-    }
+    ReAddBlockIndexCandidates();
 
     InvalidChainFound(pindex);
     return true;
@@ -3611,10 +4109,17 @@ bool AcceptBlockHeader(const CBlock& block, CValidationState& state, CBlockIndex
     if (!ContextualCheckBlockHeader(block, state, pindexPrev))
         return error("%s: ContextualCheckBlockHeader failed for block %s: %s", __func__, hash.ToString(), FormatStateMessage(state));
 
-    // Check for conflicting HU finality UNLESS that's the genesis block
+    // Check for conflicting HU finality UNLESS that's the genesis block.
+    // LOT 6 (AUD-012): Error, not DoS. This runs only for headers we have never
+    // indexed (a known header early-returns above), so nothing was ever persisted
+    // here — but the DoS(10) scored a PEER for serving a chain our LOCAL
+    // gossip-fed view dislikes, which punishes honest peers across divergent
+    // views. Refusing to index remains local policy: the header can be offered
+    // again, and a node whose view shrinks (-reindex) will accept it then.
     if (block.GetHash() != Params().GetConsensus().hashGenesisBlock && hu::finalityHandler) {
         if (hu::finalityHandler->HasConflictingFinality(pindexPrev->nHeight + 1, hash)) {
-            return state.DoS(10, error("%s: conflicting with HU finality", __func__), REJECT_INVALID, "bad-hu-finality");
+            error("%s: conflicting with HU finality", __func__);
+            return state.Error("hu-finality-local-conflict");
         }
     }
     if (pindex == nullptr)
@@ -3812,51 +4317,75 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
     // EARLY MN SIGNATURE VALIDATION (before storing block to disk)
     // This prevents fork attacks where invalid blocks get stored first.
     // Invalid blocks signed by wrong producers are rejected BEFORE WriteBlockToDisk.
-    // Also applies PoSe penalties for MNs that missed their production slot.
     // NOTE: Skip during IBD - evodb may not have data for previous blocks yet.
-    // Full validation still happens in ConnectBlock -> ProcessSpecialTxsInBlock.
+    // Full validation still happens in ConnectBlock -> CheckBlockMNOnly.
     //
     // CRITICAL FIX: Also skip if block is ahead of our chain tip. During P2P sync,
     // we receive blocks out of order. evodb only has data up to chainActive.Tip(),
     // so blocks beyond that height cannot be validated yet.
+    //
+    // LOT 9 M1+M2: the leader comes from the SAME engine as the local scheduler and
+    // ConnectBlock — ResolveScheduledProducer, resolved from the parent alone. The
+    // O-1 discipline applies: BLOCK_FAILED_VALID may persist ONLY for a genuine
+    // signature invalidity (status OK, bad signature). A local gap (DEFERRED/FATAL)
+    // or an objective stall (NO_SIGNER) never marks the block.
     int chainHeight = chainActive.Height();
     bool blockAheadOfTip = pindexPrev && (pindexPrev->nHeight > chainHeight);
     if (!Params().IsRegTestNet() && pindexPrev && !IsInitialBlockDownload() && !blockAheadOfTip) {
         // Skip genesis (has no prev) and bootstrap phase blocks
-        if (nHeight > consensus.nDMMBootstrapHeight) {
-            // Get DMN list at previous block
-            if (deterministicMNManager) {
-                CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pindexPrev);
+        if (nHeight > consensus.nDMMBootstrapHeight && deterministicMNManager) {
+            CDeterministicMNCPtr expectedMn;
+            mn_consensus::DMMScheduleResult schedRes;
+            const mn_consensus::ScheduleStatus schedStatus =
+                mn_consensus::ResolveScheduledProducer(pindexPrev, block.nTime, expectedMn, schedRes);
 
-                // Validate against the SAME bootstrap-aware eligible producer set the
-                // scheduler uses (CalculateBlockProducerScores: bootstrap-trust +
-                // confirmed MNs), not GetConfirmedMNsCount() — the confirmed-only gate
-                // skipped the producer check for the whole post-bootstrap-pre-confirmation
-                // window (~1440 blocks on mainnet). Empty set → no producer to check.
-                if (!mn_consensus::CalculateBlockProducerScores(pindexPrev, mnList).empty()) {
-                    std::vector<uint256> skippedMNs;
-                    int producerIndex = 0;
-
-                    // Use extended verification that also identifies skipped MNs
-                    // PoSe penalties are applied in CDeterministicMNManager::BuildNewListFromBlock
-                    if (!mn_consensus::VerifyBlockProducerSignatureWithPoSe(block, pindexPrev, mnList, state, skippedMNs, producerIndex)) {
-                        // Mark as invalid and reject BEFORE storing
+            switch (schedStatus) {
+                case mn_consensus::ScheduleStatus::OK:
+                    if (!mn_consensus::VerifyScheduledProducerSignature(block, expectedMn, state)) {
+                        // Genuine signature invalidity: mark and reject BEFORE storing.
                         pindex->nStatus |= BLOCK_FAILED_VALID;
                         setDirtyBlockIndex.insert(pindex);
                         LogPrintf("%s: REJECTED block %d - early MN signature validation failed: %s\n",
                                   __func__, nHeight, FormatStateMessage(state));
                         return false;
                     }
-
-                    // Log fallback usage (actual PoSe penalties applied in BuildNewListFromBlock)
-                    if (producerIndex > 0) {
-                        LogPrint(BCLog::VALIDATION, "%s: Block %d used fallback producer #%d (%d MN(s) missed slot)\n",
-                                 __func__, nHeight, producerIndex, (int)skippedMNs.size());
+                    // Telemetry only (M2 removed the temporal-PoSe consequences).
+                    if (schedRes.nRawSlot > 0) {
+                        LogPrint(BCLog::VALIDATION, "%s: Block %d produced at fallback rawSlot=%d (recovery=%d)\n",
+                                 __func__, nHeight, (int)schedRes.nRawSlot, schedRes.fRecovery ? 1 : 0);
                     }
-
                     LogPrint(BCLog::VALIDATION, "%s: Early MN signature validation PASSED for block %d\n",
                              __func__, nHeight);
-                }
+                    break;
+
+                case mn_consensus::ScheduleStatus::NO_SIGNER:
+                    // Deterministic CHAIN fact (M3 PHASE 0): a block claiming a
+                    // producer against an authoritative empty snapshot is INVALID —
+                    // same objective verdict as the ConnectBlock side; the earlier
+                    // non-persisted Error was refuted (candidate wedge, see
+                    // dmm_no_signer_e2e). Unsigned blocks claim nothing and there is
+                    // nothing to judge them against.
+                    if (!block.vchBlockSig.empty()) {
+                        pindex->nStatus |= BLOCK_FAILED_VALID;
+                        setDirtyBlockIndex.insert(pindex);
+                        LogPrintf("%s: REJECTED block %d - claims a producer but the epoch snapshot holds no eligible identity\n",
+                                  __func__, nHeight);
+                        return state.DoS(100, false, REJECT_INVALID, "bad-dmm-no-eligible-producer", false,
+                                         "block claims a producer but the authoritative epoch snapshot has no eligible identity");
+                    }
+                    break;
+
+                case mn_consensus::ScheduleStatus::DEFERRED:
+                    // Branch not connected here yet: the early check simply cannot run.
+                    // Store the block; ConnectBlock re-resolves when the branch joins.
+                    LogPrint(BCLog::VALIDATION, "%s: Block %d early producer check deferred (snapshot branch not connected)\n",
+                             __func__, nHeight);
+                    break;
+
+                case mn_consensus::ScheduleStatus::LOCAL_STATE_MISSING_FATAL:
+                    // OUR state is corrupt: LOT 1 latch, controlled shutdown, never a
+                    // verdict on the block.
+                    return mn_consensus::HandleFatalScheduleResolution(nHeight, pindexPrev->GetBlockHash(), &state);
             }
         }
     }
@@ -4008,9 +4537,12 @@ bool TestBlockValidity(CValidationState& state, const CBlock& block, CBlockIndex
         LogPrintf("%s : No longer working on chain tip\n", __func__);
         return false;
     }
-    // HU Finality: Check for conflicting finalized blocks
+    // HU Finality: check for conflicting finalized blocks.
+    // LOT 6 (AUD-012): Error, not DoS — producer-template path; refusing to BUILD
+    // on a locally-conflicting parent is local policy, not block invalidity.
     if (hu::finalityHandler && hu::finalityHandler->HasConflictingFinality(pindexPrev->nHeight + 1, block.GetHash())) {
-        return state.DoS(10, error("%s: conflicting with HU finality", __func__), REJECT_INVALID, "bad-hu-finality");
+        error("%s: conflicting with HU finality", __func__);
+        return state.Error("hu-finality-local-conflict");
     }
 
     CCoinsViewCache viewNew(pcoinsTip.get());

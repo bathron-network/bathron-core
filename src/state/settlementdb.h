@@ -208,7 +208,21 @@ bool InitSettlementAtGenesis(const uint256& genesisBlockHash);
 bool CheckSettlementDBConsistency(const uint256& chainTipHash, int chainTipHeight, bool& fRequireRebuild);
 
 /**
- * RebuildSettlementFromChain - Reconstruct settlement state from blockchain
+ * CheckA5SupplyConsistency (LOT 8) — startup cross-check of the two INDEPENDENT
+ * monetary totals when both derived DBs claim to be at the tip:
+ *   S = settlementdb latest M0_total_supply (fed by mint outputs)
+ *   L = burnclaimdb m0btcSupply            (fed by finalized burnedSats)
+ * Same-marker but S != L means one accumulator was corrupted/torn WITHOUT touching
+ * its marker — exactly the class the per-marker LOT 1 checks cannot see. Detection
+ * -> fRequireRebuild (full -reindex), NEVER an in-place repair.
+ * When either marker is absent or not at the tip, this check stays silent: the
+ * LOT 1 marker checks own that case (and already force the rebuild).
+ */
+bool CheckA5SupplyConsistency(const uint256& chainTipHash, bool& fRequireRebuild);
+
+/**
+ * RebuildSettlementFromChain - Reconstruct settlement state from blockchain.
+ * LOT 1 round 12: UNUSED — -rebuildsettlement is refused (see node/init.cpp).
  *
  * BP30 Rebuild-From-Truth: Replays all blocks from height=1 to chain tip,
  * reconstructing the settlement state (m0_total, m0_vaulted, m1_supply, etc.)

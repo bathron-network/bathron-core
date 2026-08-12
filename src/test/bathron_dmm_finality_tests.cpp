@@ -13,6 +13,8 @@
  */
 
 #include "test/test_bathron.h"
+#include "arith_uint256.h"
+#include "chain.h"
 #include "chainparams.h"
 #include "consensus/params.h"
 #include "masternode/blockproducer.h"
@@ -24,6 +26,9 @@
 #include "key.h"
 
 #include <boost/test/unit_test.hpp>
+
+#include <map>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(bathron_dmm_finality_tests, BasicTestingSetup)
 
@@ -69,90 +74,36 @@ BOOST_AUTO_TEST_CASE(dmm_slot_fallback_progression)
 }
 
 // =============================================================================
-// Test 2: MN Score determinism
+// Test 2: raw slot boundaries at the SHIPPED network parameters (LOT 9)
 // =============================================================================
-BOOST_AUTO_TEST_CASE(pose_punishment_guard_network_events)
+// The pure engine is covered by consensus_lot9_m1_schedule_tests; here the
+// boundaries are pinned against the real chainparams the node runs with.
+// (The temporal-PoSe helpers that used to be covered here were REMOVED in M2;
+// their mutant guard lives in mn_blockproducer_tests.)
+BOOST_AUTO_TEST_CASE(raw_slot_boundaries_at_network_params)
 {
-    using mn_consensus::ShouldSkipPoSePunishment;
-    const int64_t STALE = 600;  // testnet nStaleChainTimeout
+    const Consensus::Params& consensus = Params().GetConsensus();
+    CBlockIndex prev;
+    prev.nTime = 1700000000;
+    prev.nHeight = 1000;
+    const int64_t minTime = (int64_t)prev.nTime + consensus.nTargetSpacing;
 
-    // Nominal single-MN outage: 1 missed of 6, normal fallback dt → PUNISH.
-    BOOST_CHECK(!ShouldSkipPoSePunishment(105, STALE, 1, 6));
-    // Two adjacent dead MNs: 2 missed of 6 = ceil(6/3) → still individual faults → PUNISH.
-    BOOST_CHECK(!ShouldSkipPoSePunishment(125, STALE, 2, 6));
-    // Breadth cap: 3 missed of 6 > ceil(6/3)=2 → network turbulence → SKIP.
-    BOOST_CHECK(ShouldSkipPoSePunishment(135, STALE, 3, 6));
-    // Deep recovery slot: N-1 missed → SKIP regardless of dt.
-    BOOST_CHECK(ShouldSkipPoSePunishment(300, STALE, 5, 6));
-    // Chain-wide outage: dt beyond stale timeout → SKIP even for a single miss.
-    BOOST_CHECK(ShouldSkipPoSePunishment(STALE + 1, STALE, 1, 6));
-    // dt exactly at the timeout is NOT yet stale (strict >) → punish path.
-    BOOST_CHECK(!ShouldSkipPoSePunishment(STALE, STALE, 1, 6));
-    // Boundary at other sizes: ceil(4/3)=2, ceil(7/3)=3.
-    BOOST_CHECK(!ShouldSkipPoSePunishment(105, STALE, 2, 4));
-    BOOST_CHECK(ShouldSkipPoSePunishment(105, STALE, 3, 4));
-    BOOST_CHECK(!ShouldSkipPoSePunishment(105, STALE, 3, 7));
-    BOOST_CHECK(ShouldSkipPoSePunishment(105, STALE, 4, 7));
-    // Degenerate: empty producer set → nothing sensible to punish.
-    BOOST_CHECK(ShouldSkipPoSePunishment(105, STALE, 0, 0));
-}
-
-BOOST_AUTO_TEST_CASE(pose_missed_indices_match_modulo_selection)
-{
-    using mn_consensus::ComputeMissedProducerIndices;
-    // slot 0 → nobody missed.
-    BOOST_CHECK(ComputeMissedProducerIndices(0, 6).empty());
-    // slot 1 of 6 → producer is idx 1, missed = {0}.
-    auto m = ComputeMissedProducerIndices(1, 6);
-    BOOST_REQUIRE_EQUAL(m.size(), 1U);
-    BOOST_CHECK_EQUAL(m[0], 0);
-    // slot 3 of 6 → missed = {0,1,2}.
-    m = ComputeMissedProducerIndices(3, 6);
-    BOOST_REQUIRE_EQUAL(m.size(), 3U);
-    // deep slot wraps: slot 175 of 6 → everyone but the winner, each once.
-    m = ComputeMissedProducerIndices(175, 6);
-    BOOST_CHECK_EQUAL(m.size(), 5U);
-}
-
-BOOST_AUTO_TEST_CASE(mn_score_is_deterministic)
-{
-    uint256 prevHash = uint256S("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-    int height = 1000;
-    uint256 proTxHash = uint256S("0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-    arith_uint256 score1 = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash);
-    arith_uint256 score2 = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash);
-    arith_uint256 score3 = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash);
-
-    BOOST_CHECK(score1 == score2);
-    BOOST_CHECK(score2 == score3);
-}
-
-BOOST_AUTO_TEST_CASE(mn_score_differs_for_different_mns)
-{
-    uint256 prevHash = uint256S("0x1111111111111111111111111111111111111111111111111111111111111111");
-    int height = 1000;
-
-    uint256 proTxHash1 = uint256S("0x2222222222222222222222222222222222222222222222222222222222222222");
-    uint256 proTxHash2 = uint256S("0x3333333333333333333333333333333333333333333333333333333333333333");
-
-    arith_uint256 score1 = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash1);
-    arith_uint256 score2 = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash2);
-
-    // Scores should be different for different MNs
-    BOOST_CHECK(score1 != score2);
-}
-
-BOOST_AUTO_TEST_CASE(mn_score_differs_for_different_heights)
-{
-    uint256 prevHash = uint256S("0x1111111111111111111111111111111111111111111111111111111111111111");
-    uint256 proTxHash = uint256S("0x2222222222222222222222222222222222222222222222222222222222222222");
-
-    arith_uint256 score1000 = mn_consensus::ComputeMNBlockScore(prevHash, 1000, proTxHash);
-    arith_uint256 score1001 = mn_consensus::ComputeMNBlockScore(prevHash, 1001, proTxHash);
-
-    // Scores should be different for different heights
-    BOOST_CHECK(score1000 != score1001);
+    // Slot 0 spans [minTime, minTime + leaderTimeout); early blocks fold into it.
+    BOOST_CHECK_EQUAL(mn_consensus::GetRawProducerSlot(&prev, minTime - 1), 0);
+    BOOST_CHECK_EQUAL(mn_consensus::GetRawProducerSlot(&prev, minTime), 0);
+    BOOST_CHECK_EQUAL(
+        mn_consensus::GetRawProducerSlot(&prev, minTime + consensus.nHuLeaderTimeoutSeconds - 1), 0);
+    // First fallback opens exactly at leaderTimeout; windows are recovery-sized.
+    BOOST_CHECK_EQUAL(
+        mn_consensus::GetRawProducerSlot(&prev, minTime + consensus.nHuLeaderTimeoutSeconds), 1);
+    BOOST_CHECK_EQUAL(
+        mn_consensus::GetRawProducerSlot(&prev, minTime + consensus.nHuLeaderTimeoutSeconds
+                                                       + 3 * consensus.nHuFallbackRecoverySeconds), 4);
+    // UNCLAMPED (M2 removed the legacy 360 clamp with the temporal-PoSe path):
+    // a far-future timestamp lands far past 360 instead of saturating there.
+    const int64_t far = minTime + consensus.nHuLeaderTimeoutSeconds
+                      + 500 * consensus.nHuFallbackRecoverySeconds;
+    BOOST_CHECK_EQUAL(mn_consensus::GetRawProducerSlot(&prev, far), 501);
 }
 
 // =============================================================================
@@ -314,25 +265,34 @@ BOOST_AUTO_TEST_CASE(consensus_params_valid)
 }
 
 // =============================================================================
-// Test 10: DMM scheduling fairness
+// Test 10: DMM scheduling fairness (LOT 9 round-robin)
 // =============================================================================
 BOOST_AUTO_TEST_CASE(dmm_scheduling_rotation)
 {
-    // Over time, different MNs should get opportunities to produce blocks
-    // (tested via score variation across heights)
+    // The epoch schedule is a round-robin over the permutation: across one full
+    // epoch at slot 0, every operator leads exactly epochLength/P times.
+    const Consensus::Params& consensus = Params().GetConsensus();
+    const uint256 genesisHash = consensus.hashGenesisBlock;
+    const int epochLength = consensus.nDMMScheduleEpochLength;
+    // LOT 9 M3.1: epochs are anchored at the activation height, so an epoch start
+    // is activation + k*epochLength — never a bare multiple of the length.
+    const int ACTIVATION = consensus.DMMScheduleActivationHeight();
 
-    uint256 prevHash = uint256S("0x1111111111111111111111111111111111111111111111111111111111111111");
-    uint256 proTxHash = uint256S("0x2222222222222222222222222222222222222222222222222222222222222222");
+    std::vector<uint256> ops;
+    for (uint32_t i = 1; i <= 4; ++i) ops.push_back(ArithToUint256(arith_uint256(i)));
 
-    std::set<arith_uint256> uniqueScores;
-
-    for (int height = 1; height <= 100; height++) {
-        arith_uint256 score = mn_consensus::ComputeMNBlockScore(prevHash, height, proTxHash);
-        uniqueScores.insert(score);
+    const int epochStart = ACTIVATION + 10 * epochLength;
+    std::map<uint256, int> lead;
+    for (int h = epochStart; h < epochStart + epochLength; ++h) {
+        mn_consensus::DMMScheduleResult res;
+        BOOST_REQUIRE(mn_consensus::SelectScheduledLeader(genesisHash, h, ACTIVATION, epochLength,
+                                                          /*rawSlot=*/0, ops, ops, res));
+        lead[res.proTxHash]++;
     }
-
-    // All scores should be unique (different heights = different scores)
-    BOOST_CHECK_EQUAL(uniqueScores.size(), 100);
+    BOOST_CHECK_EQUAL(lead.size(), ops.size());          // everyone leads...
+    for (const auto& kv : lead) {
+        BOOST_CHECK_EQUAL(kv.second, epochLength / (int)ops.size());   // ...equally
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

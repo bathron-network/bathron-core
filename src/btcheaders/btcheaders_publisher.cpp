@@ -165,8 +165,11 @@ static bool TryPublishHeaders()
         return false;
     }
 
-    // Verify signature
-    if (!payload.VerifySignature()) {
+    // Verify signature. AUD-001 (LOT 5): the list is now explicit. This is a LOCAL
+    // pre-flight self-check before publishing our own tx — "is my key good against
+    // the list I currently see" — so the node's own tip IS the right question here.
+    // It decides nothing about the validity of a received block.
+    if (!payload.VerifySignature(deterministicMNManager->GetListAtChainTip())) {
         return false;
     }
 

@@ -101,6 +101,21 @@ CAmount GetSettlementTxFee(const CTransaction& tx, CAmount valueIn, CAmount valu
     return valueIn - valueOut;
 }
 
+bool CheckSettlementMinFee(const CTransaction& tx, CAmount fee, CValidationState& state)
+{
+    // LOT 9 M3 (O-5): the operator lease pays the SHARED settlement minimum —
+    // no exemption, no mint, no A5/A6/A7 effect (pure M0 spend + coinbase fee).
+    if (tx.nType == CTransaction::TxType::TX_OPERATOR_LEASE) {
+        const CAmount minFee = ComputeMinM1Fee(::GetSerializeSize(tx, PROTOCOL_VERSION));
+        if (fee < minFee) {
+            return state.DoS(100, error("%s: operator lease fee %lld below minimum %lld",
+                                        __func__, (long long)fee, (long long)minFee),
+                             REJECT_INVALID, "bad-lease-fee");
+        }
+    }
+    return true;
+}
+
 /**
  * CheckFeeOutputAt - Validate fee output at canonical index
  *
@@ -1108,36 +1123,103 @@ bool CheckA7(const SettlementState& state, CAmount nMaxMoneyOut,
  * ALL M0 must come from BTC burns. There is NO inflation, NO block rewards.
  * Only TX_MINT_M0BTC (finalized burn claims) can increase M0 supply.
  */
-bool CheckA5(const SettlementState& currentState,
-             const SettlementState& prevState,
-             CValidationState& validationState)
+// LOT 8: the historical CheckA5(cur, prev) is DELETED — it compared two copies of the
+// same local sum (tautology, could not fail; doc/LOT8-PHASE0-A5-INVENTORY.md) and its
+// green "settlement-a5-broken" surface overstated what was verified. The real check is
+// CheckA5Independent below, with independently-sourced operands.
+
+bool CheckA5Independent(CAmount prevS, CAmount prevL,
+                        CAmount deltaS, CAmount deltaL,
+                        CAmount nMaxMoneyOut,
+                        CValidationState& validationState,
+                        CAmount& nextSOut)
 {
-    // A5: M0(N) = M0(N-1) + BurnClaims
-    CAmount expectedSupply = prevState.M0_total_supply + currentState.burnclaims_block;
-
-    if (currentState.M0_total_supply != expectedSupply) {
-        LogPrintf("ERROR: CheckA5: MONETARY CONSERVATION VIOLATED!\n");
-        LogPrintf("  Height=%d, M0_supply=%lld != expected=%lld\n",
-                  currentState.nHeight,
-                  (long long)currentState.M0_total_supply, (long long)expectedSupply);
-        LogPrintf("  prev=%lld + burns=%lld\n",
-                  (long long)prevState.M0_total_supply,
-                  (long long)currentState.burnclaims_block);
-
-        return validationState.DoS(100, false, REJECT_INVALID, "settlement-a5-broken",
-                                   false, strprintf("A5 violated at height %d: M0=%lld != expected=%lld",
-                                                    currentState.nHeight,
-                                                    (long long)currentState.M0_total_supply,
-                                                    (long long)expectedSupply));
+    // Negativity: none of the four operands can legitimately be negative — parents are
+    // committed supplies, deltas are sums of MoneyRange-checked outputs/burn amounts.
+    // A negative value here is either corruption or an arithmetic bug upstream.
+    if (prevS < 0 || prevL < 0 || deltaS < 0 || deltaL < 0) {
+        LogPrintf("ERROR: CheckA5Independent: negative operand prevS=%lld prevL=%lld "
+                  "deltaS=%lld deltaL=%lld\n",
+                  (long long)prevS, (long long)prevL, (long long)deltaS, (long long)deltaL);
+        return validationState.DoS(100, false, REJECT_INVALID, "settlement-a5-negative",
+                                   false, "A5: negative monetary operand");
     }
 
-    LogPrint(BCLog::STATE, "CheckA5: OK h=%d M0=%lld (prev=%lld + burns=%lld)\n",
-             currentState.nHeight,
-             (long long)currentState.M0_total_supply,
-             (long long)prevState.M0_total_supply,
-             (long long)currentState.burnclaims_block);
+    // Rule 2 — INDEPENDENT delta equality. deltaS comes from the mint transactions'
+    // outputs; deltaL from the burn ledger's stored burnedSats of the claims this block
+    // finalizes. Same parent state on every honest node -> deterministic verdict.
+    if (deltaS != deltaL) {
+        LogPrintf("ERROR: CheckA5Independent: A5 DELTA MISMATCH deltaS(mint outputs)=%lld "
+                  "!= deltaL(finalized burnedSats)=%lld\n",
+                  (long long)deltaS, (long long)deltaL);
+        return validationState.DoS(100, false, REJECT_INVALID, "settlement-a5-delta-mismatch",
+                                   false, strprintf("A5: mint outputs %lld != finalized burns %lld",
+                                                    (long long)deltaS, (long long)deltaL));
+    }
 
+    // Rule 3 — staged totals, with explicit overflow checks (security.md: check BEFORE
+    // the addition). The 21M cap re-check is CheckA7's job; here we only guard the
+    // arithmetic so nextS/nextL are well-defined.
+    if (deltaS > std::numeric_limits<CAmount>::max() - prevS ||
+        deltaL > std::numeric_limits<CAmount>::max() - prevL) {
+        LogPrintf("ERROR: CheckA5Independent: overflow prevS=%lld+deltaS=%lld / prevL=%lld+deltaL=%lld\n",
+                  (long long)prevS, (long long)deltaS, (long long)prevL, (long long)deltaL);
+        return validationState.DoS(100, false, REJECT_INVALID, "settlement-a5-overflow",
+                                   false, "A5: supply addition overflow");
+    }
+    const CAmount nextS = prevS + deltaS;
+    const CAmount nextL = prevL + deltaL;
+    if (nextS != nextL) {
+        // Unreachable when rule 1 (prevS==prevL, caller) and rule 2 held — kept as a
+        // pure arithmetic backstop so no staged write can ever proceed from unequal totals.
+        LogPrintf("ERROR: CheckA5Independent: staged totals diverge nextS=%lld nextL=%lld\n",
+                  (long long)nextS, (long long)nextL);
+        return validationState.DoS(100, false, REJECT_INVALID, "settlement-a5-total-mismatch",
+                                   false, "A5: staged totals diverge");
+    }
+    (void)nMaxMoneyOut;   // cap enforcement stays in CheckA7 (called on the staged state)
+
+    nextSOut = nextS;
+    LogPrint(BCLog::STATE, "CheckA5Independent: OK delta=%lld nextS=nextL=%lld\n",
+             (long long)deltaS, (long long)nextS);
     return true;
+}
+
+const char* A5StatusToString(A5Status s)
+{
+    switch (s) {
+        case A5Status::VERIFIED:         return "VERIFIED";
+        case A5Status::MISMATCH:         return "MISMATCH";
+        case A5Status::UNAVAILABLE:      return "UNAVAILABLE";
+        case A5Status::REINDEX_REQUIRED: return "REINDEX_REQUIRED";
+    }
+    return "UNAVAILABLE";
+}
+
+bool A5MarkersCoherent(bool fHaveSMarker, bool fHaveLMarker,
+                       const uint256& sMarker, const uint256& lMarker,
+                       const uint256& tipHash, bool fGenesisTip)
+{
+    if (fHaveSMarker && fHaveLMarker) {
+        return sMarker == tipHash && lMarker == tipHash;
+    }
+    // Both absent is healthy ONLY on a fresh chain (genesis tip): markers are written by
+    // a block's own commit, so nothing has written one yet. Above genesis, an absent
+    // marker means a wiped/lost DB — incoherent (and F2 forces a rebuild at startup).
+    if (!fHaveSMarker && !fHaveLMarker) return fGenesisTip;
+    return false;   // exactly one present: never coherent
+}
+
+A5Status ComputeA5Status(bool fFatalLatch, bool fMarkersCoherent,
+                         bool fReadableS, bool fReadableL,
+                         CAmount S, CAmount L)
+{
+    // Precedence: a latched/torn node cannot certify anything (REINDEX_REQUIRED);
+    // then a total we cannot read is UNAVAILABLE (never silently true); only with
+    // coherent markers and both totals readable is the REAL comparison made.
+    if (fFatalLatch || !fMarkersCoherent) return A5Status::REINDEX_REQUIRED;
+    if (!fReadableS || !fReadableL)       return A5Status::UNAVAILABLE;
+    return (S == L) ? A5Status::VERIFIED : A5Status::MISMATCH;
 }
 
 // =============================================================================

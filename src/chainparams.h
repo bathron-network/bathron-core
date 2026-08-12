@@ -8,6 +8,10 @@
 #ifndef BATHRON_CHAINPARAMS_H
 #define BATHRON_CHAINPARAMS_H
 
+#if defined(HAVE_CONFIG_H)
+#include "config/bathron-config.h"   // BATHRON_ENABLE_LAB_PREMINE (lab-only overrides)
+#endif
+
 #include "chainparamsbase.h"
 #include "consensus/params.h"
 #include "primitives/block.h"
@@ -94,6 +98,16 @@ public:
     }
 
     void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight);
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+    //! LOT 9 M4 — LAB-ONLY, REGTEST-ONLY: raise regtest's finality floor, committee
+    //! cap and bootstrap/activation anchor to the values a PUBLIC network uses, so a
+    //! local 7-operator laboratory runs the REAL rule instead of regtest's degenerate
+    //! one (floor 1, E 1, anchor 3). This is not a shortcut — it is the opposite: it
+    //! removes regtest's shortcuts. Compiled out of any release binary, and asserts
+    //! regtest exactly like the -nuparams override does.
+    void UpdateLabDMMParams(int nQuorumSize, int nCommitteeSize, int nBootstrapHeight,
+                            int nLeaseBlocks);
+#endif
 protected:
     CChainParams() {}
 
@@ -132,5 +146,10 @@ void SelectParams(const std::string& chain);
  * Allows modifying the network upgrade regtest parameters.
  */
 void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight);
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+//! LOT 9 M4 — LAB-ONLY, REGTEST-ONLY (see CChainParams::UpdateLabDMMParams).
+void UpdateLabDMMParams(int nQuorumSize, int nCommitteeSize, int nBootstrapHeight,
+                        int nLeaseBlocks);
+#endif
 
 #endif // BATHRON_CHAINPARAMS_H

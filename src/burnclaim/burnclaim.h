@@ -29,13 +29,20 @@ static const size_t MAX_MERKLE_PROOF_LENGTH = 40;        // ~log2(max txs per bl
 static const size_t MAX_BTC_TX_VOUT_COUNT = 100;         // Sanity limit
 static const size_t MAX_BURN_CLAIMS_PER_BLOCK = 50;      // Hard limit per block
 
+// LOT 2 (AUD-003) — PRODUCER-SIDE policy default for -enablemint. Single source of
+// truth shared by the runtime read and the help text (they had drifted apart: the
+// option was read with a hardcoded `true` default and declared nowhere at all).
+// This flag NEVER reaches the validation oracle; it only decides whether THIS node is
+// willing to assemble a block carrying the due mint.
+static const bool DEFAULT_ENABLE_MINT = true;
+
 // Confirmation constants (BP10)
 static const uint32_t K_CONFIRMATIONS_MAINNET = 24;      // ~4 hours BTC confirmations
 // Reverted 100->6 now that R2 ships (commit c940bf4): a btcheaders reorg below a
 // finalized burn is rejected outright, so the deep-confirmation belt-and-suspenders
 // (temporary mitigation after the 2026-06-24 6-block signet reorg) is no longer the
 // real protection — it only slowed testnet burns. R2 is the consensus-level guard.
-static const uint32_t K_CONFIRMATIONS_TESTNET = 6;       // ~1h (Signet)
+static const uint32_t K_CONFIRMATIONS_TESTNET = 6;       // ~1h (Bitcoin Testnet4)
 
 // K_FINALITY constants (BP11) - BATHRON blocks before PENDING → FINAL
 // Same K for ALL burns (genesis and post-genesis) - no exceptions
@@ -390,7 +397,7 @@ bool IsBtcTxidBlockedByClaimRecord(const uint256& btcTxid);
  * Check if a burn claim is still valid for finalization.
  *
  * CONSENSUS function - MUST be deterministic (no GetTime()!)
- * Used in CheckMintM0BTC and CreateMintM0BTC.
+ * Used in CheckMintM0BTC and CreateExpectedMintM0BTC (the consensus oracle).
  *
  * Checks:
  * - BTC block still in SPV best chain
@@ -401,25 +408,52 @@ bool IsBtcBurnStillValidConsensus(const BurnClaimRecord& record);
 /**
  * Mint output script for a claim record (BCS v02, A2).
  * BURN_DEST_P2PKH → P2PKH(CKeyID) ; BURN_DEST_P2SH → P2SH(CScriptID).
- * CONSENSUS function — shared by CreateMintM0BTC and CheckMintM0BTC so the
+ * CONSENSUS function — shared by CreateExpectedMintM0BTC and CheckMintM0BTC so the
  * producer and the validators can never diverge on the destination form.
  */
 class CScript;
 CScript GetMintDestScript(const BurnClaimRecord& record);
 
 /**
- * Create TX_MINT_M0BTC for block at given height.
+ * CONSENSUS ORACLE (LOT 2 / AUD-003): the exact TX_MINT_M0BTC every honest node
+ * expects in the block at `blockHeight` — or the empty transaction if none is due.
  *
- * Called by block producer. MUST be deterministic:
- * - Finds all PENDING claims with claimHeight <= height - K_FINALITY
+ * STRICTLY DETERMINISTIC: reads ONLY consensus state (burnclaimdb, btcheadersdb).
+ * It MUST NEVER consult a node-local flag (-enablemint, the burn kill switch, any
+ * RPC-settable or config-settable state): this function decides BLOCK VALIDITY in
+ * ProcessSpecialTxsInBlock, and two honest nodes with different local settings must
+ * compute the identical result. (AUD-003 was exactly this contamination: the old
+ * oracle returned null under the kill switch, so a node-local flag decided whether
+ * the same block was "Missing required TX_MINT_M0BTC" or valid.)
+ *
+ * - Finds all PENDING claims with blockHeight > claimHeight + K_FINALITY
  * - Filters by IsBtcBurnStillValidConsensus()
- * - Sorts btcTxids canonically
- * - Applies MAX_MINT_CLAIMS_PER_BLOCK cap
- *
- * @param blockHeight Height of block being created
- * @return Transaction (empty if no claims to finalize)
+ * - Sorts btcTxids canonically, applies MAX_MINT_CLAIMS_PER_BLOCK cap
  */
 class CTransaction;
+CTransaction CreateExpectedMintM0BTC(uint32_t blockHeight);
+
+/**
+ * PRODUCER-SIDE POLICY predicate (LOT 2): true iff local settings allow THIS node to
+ * build a mint spontaneously. Reads the burn kill switch and -enablemint — i.e. the
+ * node-local state that must NEVER appear on a validation path. Exposed so the block
+ * assembler can distinguish "policy refuses" from "no mint is due" without running
+ * the (non-trivial) claim scan twice.
+ */
+bool MintPolicyAllowsProduction();
+
+/**
+ * PRODUCER-SIDE wrapper: local POLICY (-enablemint=0 or the burn kill switch) may
+ * stop THIS node from building a mint spontaneously — it can never change whether
+ * a received block is valid. Returns the consensus oracle's result, or the empty
+ * transaction when local policy refuses to build.
+ *
+ * NEVER call this from a validation path — validation uses
+ * CreateExpectedMintM0BTC. NOTE for the assembler: when the consensus oracle says
+ * a mint is REQUIRED but policy refuses, the only correct producer behaviour is to
+ * NOT produce a block at all (an assembled block without the required mint is
+ * consensus-invalid everywhere, including on this node).
+ */
 CTransaction CreateMintM0BTC(uint32_t blockHeight);
 
 /**
@@ -434,51 +468,14 @@ bool CheckMintM0BTC(const CTransaction& tx,
                     CValidationState& state,
                     uint32_t blockHeight);
 
-/**
- * Connect TX_MINT_M0BTC - apply finalization to DB.
- *
- * Called when block containing TX_MINT_M0BTC is connected.
- * - Sets status = FINAL for each claim
- * - Increments M0BTC supply counter
- *
- * @param tx The mint transaction
- * @param blockHeight Height of block
- */
-void ConnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight);
 
-/**
- * Disconnect TX_MINT_M0BTC - revert finalization (reorg).
- *
- * Called when block containing TX_MINT_M0BTC is disconnected.
- * - Sets status = PENDING for each claim
- * - Decrements M0BTC supply counter
- *
- * @param tx The mint transaction
- * @param blockHeight Height of block
- */
-void DisconnectMintM0BTC(const CTransaction& tx, uint32_t blockHeight);
 
-/**
- * Enter PENDING state for a burn claim.
- *
- * Called when TX_BURN_CLAIM is mined.
- *
- * @param payload The burn claim payload
- * @param bathronHeight Height of BATHRON block containing TX_BURN_CLAIM
- * @return true if successful
- */
-bool EnterPendingState(const BurnClaimPayload& payload, uint32_t bathronHeight);
 
-/**
- * Undo burn claim (BATHRON reorg disconnecting TX_BURN_CLAIM).
- *
- * ONLY removes the PENDING claim record.
- * Does NOT touch M0BTC_supply or claimed markers (that's DisconnectMintM0BTC).
- *
- * @param payload The burn claim payload
- * @param height Height of block being disconnected
- * @return true if successful
- */
-bool UndoBurnClaim(const BurnClaimPayload& payload, uint32_t height);
+
+// NOTE (AUD-017): the burn-claim state-machine entry points
+// (EnterPendingState / UndoBurnClaim / ConnectMintM0BTC / DisconnectMintM0BTC)
+// now take a CBurnClaimDB::Batch& so their writes join the caller's atomic
+// commit. They are declared in burnclaimdb.h, which owns that type and already
+// includes this header — declaring them here would be a circular include.
 
 #endif // BATHRON_BURNCLAIM_H

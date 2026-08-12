@@ -16,6 +16,7 @@
 #include "node/noui.h"
 #include "node/shutdown.h"
 #include "util/system.h"
+#include "validation.h"   // LOT 1 r15: IsConsensusDBFatal — fatal exit must be non-zero
 
 #include <stdio.h>
 
@@ -154,6 +155,19 @@ bool AppInit(int argc, char* argv[])
         WaitForShutdown();
     }
     Shutdown();
+
+    // LOT 1 r15: a shutdown caused by a consensus-DB commit failure must NEVER look
+    // like a clean stop — the operator (and any supervisor) must see a failure exit.
+    if (IsConsensusDBFatal()) {
+        ConsensusDBFatalContext ctx;
+        if (GetConsensusDBFatalContext(ctx) && !ctx.strMessage.empty()) {
+            fprintf(stderr, "FATAL: %s\n", ctx.strMessage.c_str());
+        } else {
+            fprintf(stderr, "FATAL: consensus DB commit failure (context unavailable); "
+                            "restart the node, -reindex if instructed\n");
+        }
+        return false;
+    }
 
     return fRet;
 }

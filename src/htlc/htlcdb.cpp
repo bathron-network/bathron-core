@@ -4,6 +4,7 @@
 
 #include "htlc/htlcdb.h"
 
+#include "chainparams.h"
 #include "clientversion.h"
 #include "logging.h"
 
@@ -627,3 +628,55 @@ bool InitHtlcDB(size_t nCacheSize, bool fMemory, bool fWipe)
 // IsHtlcDBMissing - Check if htlc directory exists
 // =============================================================================
 
+// =============================================================================
+// CheckHtlcDBConsistency (LOT 1 round 4)
+// =============================================================================
+bool CheckHtlcDBConsistency(const uint256& chainTipHash, bool& fRequireRebuild)
+{
+    fRequireRebuild = false;
+
+    if (!g_htlcdb) {
+        LogPrintf("HTLC: No htlc DB, skipping consistency check\n");
+        return true;
+    }
+
+    uint256 dbBestBlock;
+    if (!g_htlcdb->ReadBestBlock(dbBestBlock)) {
+        // An ABSENT marker is only benign on a FRESH chain (same rule as the
+        // settlement and burnclaim twins). The HTLC marker advances on EVERY
+        // connected block — even an HTLC-free one (see ProcessSpecialTxsInBlock,
+        // "marker must STILL advance") — so:
+        //   tip == genesis  -> nothing has committed yet: legitimately absent, PASS;
+        //   tip >  genesis  -> the marker MUST exist. Its absence means the HTLC DB
+        //                      was wiped or lost out of band while the chain advanced.
+        //                      HTLC state is consensus-read (CheckHTLCClaim/Refund),
+        //                      so a node starting on an empty DB would reject blocks
+        //                      its peers accept. FAIL CLOSED -> full -reindex.
+        // Startup gate only: the caller surfaces strLoadError. Never a DoS, ban or
+        // BLOCK_FAILED_* verdict, and the marker is never silently repaired here.
+        if (chainTipHash == Params().GetConsensus().hashGenesisBlock) {
+            LogPrintf("HTLC: DB is empty at genesis (fresh chain) — OK, will be populated\n");
+            return true;
+        }
+        LogPrintf("HTLC: DB has NO best-block marker while the chain is at %s (above "
+                  "genesis) — the HTLC DB was wiped or lost; rebuild required\n",
+                  chainTipHash.ToString());
+        fRequireRebuild = true;
+        return false;
+    }
+
+    if (dbBestBlock == chainTipHash) {
+        LogPrintf("HTLC: DB consistent with chain tip (%s)\n",
+                  chainTipHash.ToString().substr(0, 8));
+        return true;
+    }
+
+    // Marker present but pointing somewhere else — either a block the chain does not
+    // have (crash after the htlc batch committed, before the tip advanced) or a stale
+    // parent. Both mean records may exist beyond the canonical tip. Consensus-tied
+    // state (CheckHTLCClaim/Refund read it), so it cannot be silently trusted.
+    LogPrintf("HTLC: DB best block %s doesn't match chain tip %s - rebuild required\n",
+              dbBestBlock.ToString(), chainTipHash.ToString());
+    fRequireRebuild = true;
+    return false;
+}

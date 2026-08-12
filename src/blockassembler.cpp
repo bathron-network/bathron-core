@@ -137,9 +137,9 @@ std::vector<CTransactionRef> CreateGenesisHeaderTransactions(uint32_t fromHeight
         return headerTxs;
     }
 
-    // Network-aware genesis checkpoint from btcspv (mainnet 800000 / signet 286000) — the
-    // SAME source the SPV verifier uses — NOT the signet-hardcoded fallback const, so the
-    // headers chain anchors correctly on mainnet.
+    // Network-aware genesis checkpoint from btcspv (mainnet 800000 / testnet4 145152) — the
+    // SAME source the SPV verifier uses — NOT the hardcoded fallback const, so the
+    // headers chain anchors correctly on every network.
     uint32_t genesisCheckpoint = BTCHEADERS_GENESIS_CHECKPOINT;
     {
         uint256 cpHash;
@@ -221,6 +221,44 @@ std::vector<CTransactionRef> CreateGenesisHeaderTransactions(uint32_t fromHeight
 // NOTE: CreateGenesisBurnClaimTransactions() REMOVED
 // All burns (including pre-launch burns) are detected by burn_claim_daemon
 // after network starts. Block 1 only contains TX_BTC_HEADERS.
+
+//! LOT 2 (AUD-003) — add the due TX_MINT_M0BTC, or refuse to assemble.
+//!
+//! The CONSENSUS oracle decides whether a mint is due; local policy (kill switch /
+//! -enablemint) only decides whether THIS node is willing to build it. When a mint
+//! is due but policy refuses, the only correct behaviour is to produce no block at
+//! all: a block missing the required mint is invalid on EVERY node, including this
+//! one. With PARTIAL fleet activation another operator's slot keeps the chain alive;
+//! with FLEET-WIDE activation production stops until policy is restored — that is
+//! the intended consequence of the flag no longer being able to change consensus.
+//!
+//! Returns false if the caller must abandon the template.
+//! The claim scan runs exactly ONCE on every path: it walks all pending claims and
+//! hits btcheadersdb per claim, so asking policy first keeps the common case cheap.
+static bool AddRequiredMintOrRefuse(CBlock& block, uint32_t height)
+{
+    if (!MintPolicyAllowsProduction()) {
+        // Policy refuses. Consensus still decides whether a mint is DUE.
+        if (!CreateExpectedMintM0BTC(height).IsNull()) {
+            error("CreateNewBlock: TX_MINT_M0BTC required at height %u but local policy "
+                  "refuses to build it (killswitch/-enablemint); refusing to assemble a "
+                  "block that every node — including this one — would reject", height);
+            return false;
+        }
+        return true;                       // nothing due; a mint-less block is valid
+    }
+
+    // Policy allows. Call the ORACLE directly — not the wrapper, which would read the
+    // policy a SECOND time: `setbtcburnsenabled` takes no cs_main, so a flip landing
+    // between the two reads would silently produce a mint-less block while a mint is
+    // due (a self-rejecting block and a wasted slot). One policy read, one scan.
+    CTransaction mintTx = CreateExpectedMintM0BTC(height);
+    if (!mintTx.IsNull()) {
+        block.vtx.push_back(MakeTransactionRef(std::move(mintTx)));
+        LogPrint(BCLog::STATE, "BP11: Added TX_MINT_M0BTC at height %d\n", height);
+    }
+    return true;
+}
 
 BlockAssembler::BlockAssembler(const CChainParams& _chainparams, const bool _defaultPrintPriority)
         : chainparams(_chainparams), defaultPrintPriority(_defaultPrintPriority)
@@ -329,18 +367,10 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
             }
 
             // Also try minting (heights >= 2)
-            CTransaction mintTx = CreateMintM0BTC(height);
-            if (!mintTx.IsNull()) {
-                pblock->vtx.push_back(MakeTransactionRef(std::move(mintTx)));
-                LogPrint(BCLog::STATE, "BP11: Added TX_MINT_M0BTC at height %d\n", height);
-            }
+            if (!AddRequiredMintOrRefuse(*pblock, height)) return nullptr;
         } else {
             // Heights >= 2: Normal BP11 finalization of burn claims
-            CTransaction mintTx = CreateMintM0BTC(height);
-            if (!mintTx.IsNull()) {
-                pblock->vtx.push_back(MakeTransactionRef(std::move(mintTx)));
-                LogPrint(BCLog::STATE, "BP11: Added TX_MINT_M0BTC at height %d\n", height);
-            }
+            if (!AddRequiredMintOrRefuse(*pblock, height)) return nullptr;
         }
     }
 

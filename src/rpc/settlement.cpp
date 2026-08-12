@@ -19,6 +19,8 @@
 #include "rpc/server.h"
 #include "state/settlement.h"
 #include "state/settlementdb.h"
+#include "state/settlement_logic.h"       // LOT 8: A5Status + ComputeA5Status
+#include "masternode/specialtx_validation.h"  // LOT 8: AuditA5Supply (architecture C)
 #include "validation.h"
 #include "utilmoneystr.h"
 #include "chainparams.h"
@@ -55,6 +57,67 @@ static std::string GetNetworkName()
     if (chain == CBaseChainParams::TESTNET) return "testnet";
     if (chain == CBaseChainParams::REGTEST) return "regtest";
     return "privnet";
+}
+
+/**
+ * LOT 8 — live A5 verdict for the RPC surface. Gathers the FACTS (fatal latch, both
+ * DB markers vs the chain tip, the two independent totals) and classifies them with
+ * the pure ComputeA5Status. This REPLACES the previous hardcoded `a5Ok = true`:
+ * every emitted verdict is now really computed, and the four states are never
+ * collapsed into a misleading boolean (the compat `ok` is true ONLY on VERIFIED —
+ * UNAVAILABLE/REINDEX_REQUIRED/MISMATCH all read false).
+ */
+struct A5RuntimeFacts {
+    A5Status status = A5Status::UNAVAILABLE;
+    CAmount S = -1, L = -1;
+    bool haveS = false, haveL = false;
+    bool markersCoherent = false;
+    bool fatalLatch = false;
+};
+
+static A5RuntimeFacts GetA5RuntimeFacts()
+{
+    A5RuntimeFacts f;
+    AssertLockHeld(cs_main);
+    f.fatalLatch = IsConsensusDBFatal();
+
+    const CBlockIndex* tip = chainActive.Tip();
+    uint256 sMk, lMk;
+    const bool haveSMk = g_settlementdb && g_settlementdb->ReadBestBlock(sMk);
+    const bool haveLMk = g_burnclaimdb && g_burnclaimdb->ReadBestBlock(lMk);
+    // Coherence rule extracted to A5MarkersCoherent (pure, unit-tested). The previous
+    // inline rule treated ANY present marker at height 0 as incoherent, so a node rolled
+    // back exactly to genesis — which has both markers written by the undo, at the genesis
+    // hash — reported REINDEX_REQUIRED while being perfectly healthy.
+    if (tip == nullptr) {
+        f.markersCoherent = !haveSMk && !haveLMk;
+    } else {
+        f.markersCoherent = A5MarkersCoherent(haveSMk, haveLMk, sMk, lMk,
+                                              tip->GetBlockHash(), tip->nHeight == 0);
+    }
+
+    if (g_settlementdb) {
+        SettlementState st;
+        if (g_settlementdb->ReadLatestState(st)) { f.S = st.M0_total_supply; f.haveS = true; }
+        // REVIEW LOW-1: do NOT synthesize S=0 when the read fails, not even at height 0.
+        // "cannot read" must surface as UNAVAILABLE — turning an unreadable DB into a
+        // value would be the very "assumed OK" pattern this lot removed. On a healthy
+        // fresh chain InitSettlementAtGenesis has written the height-0 record, so the
+        // honest empty-chain case still reads a real 0 and reports VERIFIED.
+    }
+    if (g_burnclaimdb) { f.L = (CAmount)g_burnclaimdb->GetM0BTCSupply(); f.haveL = true; }
+
+    f.status = ComputeA5Status(f.fatalLatch, f.markersCoherent, f.haveS, f.haveL, f.S, f.L);
+    return f;
+}
+
+//! Push the four-state A5 verdict (+ compat `ok`, true ONLY on VERIFIED).
+static void PushA5Verdict(UniValue& obj, const A5RuntimeFacts& f)
+{
+    obj.pushKV("status", A5StatusToString(f.status));
+    obj.pushKV("ok", f.status == A5Status::VERIFIED);
+    obj.pushKV("settlement_m0_total", f.haveS ? FormatAmount(f.S) : "unreadable");
+    obj.pushKV("burnledger_m0btc",    f.haveL ? FormatAmount(f.L) : "unreadable");
 }
 
 /**
@@ -151,9 +214,9 @@ static UniValue getstate(const JSONRPCRequest& request)
     CAmount a6Delta = a6Lhs - a6Rhs;
     bool a6Ok = (a6Delta == 0);
 
-    // A5 check: verify M0_total_supply matches expected from previous block + coinbase
-    // (For display purposes - actual consensus check happens in ProcessSpecialTxsInBlock)
-    bool a5Ok = true;  // Assumed OK since we're reading committed state
+    // LOT 8: the A5 verdict is REALLY COMPUTED (independent settlement-vs-burn-ledger
+    // totals + marker coherence + fatal latch), four-state, never a hardcoded true.
+    const A5RuntimeFacts a5Facts = GetA5RuntimeFacts();
 
     // ========================================
     // V2 FORMAT (clean, minimal, stable)
@@ -184,11 +247,12 @@ static UniValue getstate(const JSONRPCRequest& request)
     // Invariants - ONE place for all checks
     UniValue invariants(UniValue::VOBJ);
 
-    // A5: Monetary Conservation (anti-inflation)
+    // A5: Monetary Conservation — REALLY computed (LOT 8): independent totals
+    // (settlement vs burn ledger) under coherent markers, four-state verdict.
     UniValue a5(UniValue::VOBJ);
-    a5.pushKV("ok", a5Ok);
-    a5.pushKV("formula", "M0_total(N) = M0_total(N-1) + BurnClaims");
-    a5.pushKV("description", "M0 only created from BTC burns");
+    PushA5Verdict(a5, a5Facts);
+    a5.pushKV("formula", "settlement M0_total == burn-ledger m0btcSupply");
+    a5.pushKV("description", "independent cross-check: mint-side supply vs finalized BTC-burn total");
     invariants.pushKV("A5", a5);
 
     // A6: Settlement Backing
@@ -287,9 +351,13 @@ static UniValue gethealth(const JSONRPCRequest& request)
     }
     if (finalityLag > 5) overallOk = false;
 
+    // LOT 8: really computed, four-state; the boolean is true ONLY on VERIFIED.
+    const A5RuntimeFacts a5Facts = GetA5RuntimeFacts();
+    if (a5Facts.status != A5Status::VERIFIED) overallOk = false;
     result.pushKV("ok", overallOk);
     result.pushKV("height", height);
-    result.pushKV("invariant_a5", true);  // A5 always OK if block was accepted (consensus check)
+    result.pushKV("invariant_a5", a5Facts.status == A5Status::VERIFIED);
+    result.pushKV("invariant_a5_status", A5StatusToString(a5Facts.status));
     result.pushKV("invariant_a6", a6Ok);
     result.pushKV("finality_lag", finalityLag);
 
@@ -450,9 +518,13 @@ static UniValue getexplorerdata(const JSONRPCRequest& request)
     // ========================================
     UniValue invariants(UniValue::VOBJ);
 
-    // A5: Monetary Conservation (M0 only from BTC burns)
-    invariants.pushKV("a5_ok", true);  // Always OK if block was accepted
+    // A5: Monetary Conservation — REALLY computed (LOT 8), four-state; the boolean
+    // is true ONLY on VERIFIED (UNAVAILABLE can never read as true).
+    const A5RuntimeFacts a5Facts = GetA5RuntimeFacts();
+    invariants.pushKV("a5_ok", a5Facts.status == A5Status::VERIFIED);
+    invariants.pushKV("a5_status", A5StatusToString(a5Facts.status));
     invariants.pushKV("a5_m0_total", FormatAmount(settlementState.M0_total_supply));
+    invariants.pushKV("a5_burnledger_total", a5Facts.haveL ? FormatAmount(a5Facts.L) : "unreadable");
     invariants.pushKV("a5_burnclaims", FormatAmount(settlementState.burnclaims_block));
     invariants.pushKV("a5_delta", FormatAmount(settlementState.GetA5Delta()));
 
@@ -499,27 +571,28 @@ static UniValue getexplorerdata(const JSONRPCRequest& request)
 
     // ========================================
     // 5. BTC BURNS
-    // A5: btc_burned_sats == M0_total (by construction, always)
-    // Settlement is the source of truth for totals.
-    // burnclaimdb tracks individual claims (may be 0 for genesis burns).
+    // LOT 8: the burn-ledger total is the INDEPENDENT side of A5 (Σ finalized
+    // burnedSats), no longer relabeled M0_total; a divergence surfaces through
+    // invariants.a5_status (MISMATCH), not a cosmetic warning. (The old
+    // "genesis burns not tracked individually" caveat described the RETIRED
+    // genesis flow where block 1 was a mint; the current flow has no genesis mint.)
     // ========================================
     UniValue burns(UniValue::VOBJ);
-
-    // btc_burned_sats = M0_total (A5 invariant, always exact)
-    burns.pushKV("btc_burned_sats", m0Total);
 
     // Individual claim tracking from burnclaimdb (debug/detail)
     if (g_burnclaimdb) {
         auto stats = g_burnclaimdb->GetStats();
+        // The independent burn-ledger total — the REAL "BTC burned" figure.
+        burns.pushKV("btc_burned_sats", (int64_t)stats.m0btcSupply);
         burns.pushKV("burn_count", (int64_t)stats.finalCount);
         burns.pushKV("pending_count", (int64_t)stats.pendingCount);
         burns.pushKV("btc_pending_sats", (int64_t)stats.pendingAmount);
-        // Debug: check if burnclaimdb is in sync with settlement
         burns.pushKV("burnclaimdb_sats", (int64_t)stats.m0btcSupply);
         if (stats.m0btcSupply != (uint64_t)m0Total) {
-            burns.pushKV("sync_warning", "burnclaimdb out of sync with settlement (genesis burns not tracked individually)");
+            burns.pushKV("sync_warning", "burn ledger diverges from settlement M0_total — see invariants.a5_status");
         }
     } else {
+        burns.pushKV("btc_burned_sats", 0);
         burns.pushKV("burn_count", 0);
         burns.pushKV("pending_count", 0);
         burns.pushKV("btc_pending_sats", 0);
@@ -583,6 +656,107 @@ static UniValue getexplorerdata(const JSONRPCRequest& request)
     return result;
 }
 
+/**
+ * audita5 (LOT 8, architecture C) — EXPLICIT full-chain A5 audit.
+ *
+ * Recomputes both monetary totals from the canonical blocks alone (burn claims
+ * parsed from raw payloads, mints from their outputs) and compares them to the
+ * live accumulators. Never trusts what it audits; never automatic (on-demand
+ * command only). Verdicts: VERIFIED / MISMATCH / UNAVAILABLE — a chain it cannot
+ * fully read is NEVER reported verified.
+ */
+static UniValue audita5(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() > 0) {
+        throw std::runtime_error(
+            "audita5\n"
+            "\nEXPLICIT full-chain audit of the A5 monetary invariant (LOT 8, architecture C).\n"
+            "Recomputes, from the canonical blocks only: every burn claim's parsed burnedSats,\n"
+            "every PENDING->FINAL transition, the total M0 minted (audit_mint_total) and the\n"
+            "total finalized burns (audit_burn_total) — then compares with the live settlement\n"
+            "and burn-ledger accumulators. Trusts nothing it audits.\n"
+            "\nSCOPE (honest): audits this node's LOCAL canonical chain. It does NOT re-verify\n"
+            "the burns against the live Bitcoin network (no BTC P2P client in this codebase);\n"
+            "burn authenticity rests on the operator-published header chain. On regtest the\n"
+            "burns are HARNESS burns (Route C) — never real mainnet BTC.\n"
+            "It compares TOTALS (and per-burn single-use), not per-claim attribution of each\n"
+            "output — the per-output equality is enforced in-line by CheckMintM0BTC.\n"
+            "\nA latched node, or one whose settlement/burnclaim markers disagree with the tip,\n"
+            "can NEVER report a global VERIFIED: matching arithmetic does not certify a node\n"
+            "that is unfit to serve it. computed_match and health_status are exposed separately.\n"
+            "\nCOST: reads EVERY block from disk and holds cs_main for the whole scan — O(chain).\n"
+            "Expect a pause proportional to chain height; run it deliberately, not in a loop.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"status\": \"VERIFIED|MISMATCH|UNAVAILABLE|REINDEX_REQUIRED\",  (conservative combination)\n"
+            "  \"computed_match\": \"VERIFIED|MISMATCH|UNAVAILABLE\",   (do the recomputed numbers agree?)\n"
+            "  \"health_status\": \"VERIFIED|MISMATCH|UNAVAILABLE|REINDEX_REQUIRED\", (is this node fit to certify?)\n"
+            "  \"audit_mint_total\":  n,   (recomputed Σ TX_MINT_M0BTC outputs)\n"
+            "  \"audit_burn_total\":  n,   (recomputed Σ finalized burnedSats)\n"
+            "  \"db_settlement_m0\":  n,   (live accumulator)\n"
+            "  \"db_burnledger_m0\":  n,   (live accumulator)\n"
+            "  ...\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("audita5", "")
+            + HelpExampleRpc("audita5", ""));
+    }
+
+    LOCK(cs_main);
+    A5AuditResult r;
+    const bool ok = AuditA5Supply(r);
+
+    UniValue result(UniValue::VOBJ);
+
+    // ── The RECOMPUTE verdict: do the numbers add up, on their own terms?
+    std::string computedMatch;
+    if (!ok || !r.fComplete) {
+        computedMatch = "UNAVAILABLE";                // cannot read -> never "verified"
+    } else if (r.nUnknownMintRefs > 0 || r.auditS != r.auditL) {
+        computedMatch = "MISMATCH";                   // the canonical chain is self-inconsistent
+    } else if (!r.haveDbS || !r.haveDbL) {
+        computedMatch = "UNAVAILABLE";                // recompute fine, accumulators unreadable
+    } else if (r.auditS == r.dbS && r.auditL == r.dbL) {
+        computedMatch = "VERIFIED";
+    } else {
+        computedMatch = "MISMATCH";                   // recompute disagrees with an accumulator
+    }
+
+    // ── The NODE-HEALTH verdict (F1/F2 follow-up): matching totals prove nothing on a
+    // node whose consensus DBs are latched or whose markers do not agree with the tip —
+    // the audit would be certifying arithmetic while the node is unfit to serve it.
+    const A5RuntimeFacts facts = GetA5RuntimeFacts();
+    const std::string healthStatus = A5StatusToString(facts.status);
+
+    // ── The GLOBAL status is the CONSERVATIVE combination: a latched or marker-incoherent
+    // node reports REINDEX_REQUIRED, unreadable data reports UNAVAILABLE, and VERIFIED is
+    // reachable ONLY when the recompute matches AND the node is healthy.
+    std::string status;
+    if (facts.status == A5Status::REINDEX_REQUIRED) {
+        status = "REINDEX_REQUIRED";
+    } else if (computedMatch == "UNAVAILABLE" || facts.status == A5Status::UNAVAILABLE) {
+        status = "UNAVAILABLE";
+    } else if (computedMatch == "MISMATCH" || facts.status == A5Status::MISMATCH) {
+        status = "MISMATCH";
+    } else {
+        status = "VERIFIED";
+    }
+    if (!ok || !r.fComplete) result.pushKV("error", r.strError);
+    result.pushKV("status", status);
+    result.pushKV("computed_match", computedMatch);
+    result.pushKV("health_status", healthStatus);
+    result.pushKV("audit_mint_total", (int64_t)r.auditS);
+    result.pushKV("audit_burn_total", (int64_t)r.auditL);
+    result.pushKV("db_settlement_m0", r.haveDbS ? UniValue((int64_t)r.dbS) : UniValue("unreadable"));
+    result.pushKV("db_burnledger_m0", r.haveDbL ? UniValue((int64_t)r.dbL) : UniValue("unreadable"));
+    result.pushKV("blocks_scanned", r.nBlocksScanned);
+    result.pushKV("claims_seen", r.nClaimsSeen);
+    result.pushKV("mints_seen", r.nMintsSeen);
+    result.pushKV("unknown_mint_refs", r.nUnknownMintRefs);
+    result.pushKV("scope", "local canonical chain only; Bitcoin-side burn authenticity NOT re-verified here");
+    return result;
+}
+
 // clang-format off
 static const CRPCCommand commands[] =
 { //  category       name                   actor (function)    okSafe argNames
@@ -590,6 +764,7 @@ static const CRPCCommand commands[] =
     { "settlement",  "getstate",            &getstate,          true,  {} },
     { "settlement",  "gethealth",           &gethealth,         true,  {} },
     { "settlement",  "getexplorerdata",     &getexplorerdata,   true,  {} },
+    { "settlement",  "audita5",             &audita5,           true,  {} },
 };
 // clang-format on
 

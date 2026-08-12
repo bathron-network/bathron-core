@@ -20,6 +20,15 @@ static const char DB_TIP_HASH = 't';      // 'Bt' -> best tip hash
 static const char DB_TIP_WORK = 'w';      // 'Bw' -> best chainwork
 static const char DB_TIP_HEIGHT = 'h';    // 'Bh' -> best height
 static const char DB_MIN_HEIGHT = 'm';    // 'Bm' -> minimum supported height (persisted at init)
+static const char DB_SOURCE_NET = 'n';    // 'Bn' -> BtcSourceNet tag (uint8) — refuses a store built for another Bitcoin network
+
+std::string BtcSourceNetToString(BtcSourceNet net) {
+    switch (net) {
+        case BtcSourceNet::BITCOIN_MAINNET: return "mainnet";
+        case BtcSourceNet::BITCOIN_TESTNET4: return "testnet4";
+    }
+    return "unknown";
+}
 
 // Bitcoin mainnet parameters
 const BtcNetworkParams& GetBtcMainnetParams() {
@@ -31,21 +40,37 @@ const BtcNetworkParams& GetBtcMainnetParams() {
         params.defaultPort = 8333;
         // powLimit = 00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
         params.powLimit = UintToArith256(uint256S("00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
+        params.nPowTargetSpacing = 600;
+        params.nPowTargetTimespan = 14 * 24 * 60 * 60;
+        params.fPowAllowMinDifficultyBlocks = false;
+        params.enforceBIP94 = false;
+        params.genesisCheckpointHeight = 800000;
         initialized = true;
     }
     return params;
 }
 
-// Bitcoin Signet parameters
-const BtcNetworkParams& GetBtcSignetParams() {
+// Bitcoin Testnet4 parameters (BIP-94; Bitcoin Core v28.1 CTestNet4Params).
+// The BATHRON measurement network reads Testnet4 as its Bitcoin source.
+// There is deliberately NO Signet params function anymore: Signet header PoW is
+// CPU-forgeable (~2^27 hashes measured) because BIP-325 authentication lives in
+// the coinbase witness, which TX_BTC_HEADERS does not carry.
+const BtcNetworkParams& GetBtcTestnet4Params() {
     static BtcNetworkParams params;
     static bool initialized = false;
     if (!initialized) {
-        params.magic = 0x0A03CF40;
-        params.genesisHash = uint256S("00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6");
-        params.defaultPort = 38333;
-        // Signet has same powLimit format
-        params.powLimit = UintToArith256(uint256S("00000377ae000000000000000000000000000000000000000000000000000000"));
+        // pchMessageStart {0x1c,0x16,0x3f,0x28} read as LE uint32 (same
+        // convention as mainnet 0xD9B4BEF9 == wire F9 BE B4 D9).
+        params.magic = 0x283F161C;
+        params.genesisHash = uint256S("00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043");
+        params.defaultPort = 48333;
+        // Same powLimit as mainnet (BIP-94) — NOT the forgeable Signet 2^233.
+        params.powLimit = UintToArith256(uint256S("00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
+        params.nPowTargetSpacing = 600;
+        params.nPowTargetTimespan = 14 * 24 * 60 * 60;
+        params.fPowAllowMinDifficultyBlocks = true;   // 20-minute exception
+        params.enforceBIP94 = true;                   // timewarp + first-block retarget
+        params.genesisCheckpointHeight = 145152;      // retarget boundary (72*2016)
         initialized = true;
     }
     return params;
@@ -73,51 +98,118 @@ const std::vector<BtcCheckpoint>& GetBtcMainnetCheckpoints() {
     return checkpoints;
 }
 
-// Signet checkpoints
-const std::vector<BtcCheckpoint>& GetBtcSignetCheckpoints() {
+// Testnet4 checkpoints.
+// Provenance (2026-08-03): hashes cross-verified on three independent sources —
+// (1) local Bitcoin Core v28.1 full header validation (headers synced from P2P),
+// (2) mempool.space/testnet4, (3) mempool.emzy.de/testnet4. Chainwork values
+// from source (1) `getblockheader`.
+const std::vector<BtcCheckpoint>& GetBtcTestnet4Checkpoints() {
     static std::vector<BtcCheckpoint> checkpoints;
     static bool initialized = false;
     if (!initialized) {
-        // Signet checkpoint at block 200000
+        // Genesis checkpoint at 145152 = 72*2016, a RETARGET BOUNDARY: its nBits
+        // is the BIP-94 base for the next retarget, it can never be a
+        // min-difficulty block, and min-difficulty walk-backs from any height in
+        // (145152, 147168) terminate at or above it.
         checkpoints.push_back({
-            200000,
-            uint256S("0000007d60f5ffc47975418ac8331c0ea52cf551730ef7ead7ff9082a536f13c"),
-            UintToArith256(uint256S("0000000000000000000000000000000000000000000000000000024389c5fcd1"))
+            145152,
+            uint256S("00000000000000014694285ac2a2980339778e6b73d2199a65a5f62f2df44d2d"),
+            UintToArith256(uint256S("000000000000000000000000000000000000000000000d12d1787a7afe99cead"))
         });
-        // Signet checkpoint at block 280000
+        // Recent anchor at 146000 (raises the consensus reorg floor near the
+        // measurement-genesis era; itself a min-difficulty block, which is
+        // valid off-boundary under the 20-minute rule).
         checkpoints.push_back({
-            280000,
-            uint256S("00000007cf38f0abf5564dde6a748fbd09d4c29f755405ae936d6b9b13d5db3c"),
-            UintToArith256(uint256S("000000000000000000000000000000000000000000000000000008d0d4c63c66"))
-        });
-        // Signet checkpoint at block 286000 (genesis checkpoint for ultra-clean genesis v3.1)
-        // BEFORE first burn at 286326, allows all burns to be discovered dynamically
-        checkpoints.push_back({
-            286000,
-            uint256S("0000000732c0c78558a50be0774d99188f65ee374e10ff9816deaf42df9f7780"),
-            UintToArith256(uint256S("000000000000000000000000000000000000000000000000000009f3cf1f88dc"))
+            146000,
+            uint256S("00000000000774b867c9eabbc5eba5919e97bb8f7b06f9e86547c7f86966f054"),
+            UintToArith256(uint256S("000000000000000000000000000000000000000000000d43aaed4f5b953a147d"))
         });
         initialized = true;
     }
     return checkpoints;
 }
 
-// Genesis header for Signet at height 286000 (BATHRON SPV starting point)
-// This is the FULL 80-byte header, hardcoded so new nodes can sync from here
-// Raw hex: 00000020b4db62a731350ea5e718564de86bc6b524f09c43e655fe8108a6c0db09000000
-//          f3d440fbab37ab5a7de6ee128dc5b5833bdf9437913c8a7b8ce3232bdb1c317411025e69d720141d1644790b
-bool GetBtcSignetGenesisHeader(BtcBlockHeader& header) {
-    // Block 286000 on Signet
-    header.nVersion = 0x20000000;  // Version 536870912
-    header.hashPrevBlock = uint256S("00000009dbc0a60881fe55e6439cf024b5c66be84d5618e7a50e3531a762dbb4");
-    // Verified: double-SHA256(serialized header) == checkpoint hash 0000000732c0...
-    // (previous literals had transcription typos in merkleRoot/nTime/nNonce that did
-    // NOT hash to the checkpoint; the raw-hex comment above was always correct).
-    header.hashMerkleRoot = uint256S("74311cdb2b23e38c7b8a3c913794df3b83b5c58d12eee67d5aab37abfb40d4f3");
-    header.nTime = 1767768593;     // unix time of signet block 286000
-    header.nBits = 0x1d1420d7;     // Difficulty bits
-    header.nNonce = 192496662;     // Nonce
+// Genesis header for Testnet4 at height 145152 (BATHRON SPV starting point).
+// FULL 80-byte header, hardcoded so new nodes can sync from here. Verified:
+// double-SHA256(serialized header) == checkpoint hash 00000000000000014694…
+// Raw hex: 00204d2aea88567d77979f36589bd4f772a630252a8bf3a5ff4231d40100000000
+//          0000005e8775da75a4015b3309e6dbbee0c7cdf6c2fe4fed9a8d9551556f767f4b
+//          af72cd37606adf74021942ae6220
+bool GetBtcTestnet4GenesisHeader(BtcBlockHeader& header) {
+    header.nVersion = 0x2a4d2000;
+    header.hashPrevBlock  = uint256S("0000000000000001d43142ffa5f38b2a2530a672f7d49b58369f97777d5688ea");
+    header.hashMerkleRoot = uint256S("72af4b7f766f5551958d9aed4ffec2f6cdc7e0bedbe609335b01a475da75875e");
+    header.nTime = 1784690637;
+    header.nBits = 0x190274df;
+    header.nNonce = 543338050;
     return true;
+}
+
+// The 10 REAL Testnet4 headers 145142..145151, pinned as MTP CONTEXT below the
+// genesis checkpoint: the 11-block median-time-past window for heights just
+// above the pin must match Bitcoin Core exactly (real Testnet4 carries
+// negative timestamp gaps — 145156 is 6375 s earlier than its parent, legal
+// because MTP reaches below the pin). Same provenance as the checkpoints
+// (Core v28.1 P2P + mempool.space + mempool.emzy.de, 2026-08-03); linkage into
+// the pinned 145152 header is verified at init — a bad literal aborts startup.
+const std::vector<BtcBlockHeader>& GetBtcTestnet4GenesisContext() {
+    static std::vector<BtcBlockHeader> ctx;
+    static bool initialized = false;
+    if (!initialized) {
+        auto mk = [](int32_t v, const char* prev, const char* merkle,
+                     uint32_t t, uint32_t bits, uint32_t nonce) {
+            BtcBlockHeader h;
+            h.nVersion = v;
+            h.hashPrevBlock = uint256S(prev);
+            h.hashMerkleRoot = uint256S(merkle);
+            h.nTime = t;
+            h.nBits = bits;
+            h.nNonce = nonce;
+            return h;
+        };
+        // h=145142
+        ctx.push_back(mk(0x2ac1e000, "00000000009fc968763bb1b2ca7ffe8c8ffe584dc8b50e554445f48ea24c34bc",
+                         "1ba9981228aaf4c43274d456ee56e4a9ddd61c9eeecd047b358c23b63655183b",
+                         1784683913U, 0x1d00ffff, 2723807704U));
+        // h=145143
+        ctx.push_back(mk(0x2960a000, "0000000000d763d68061e3f30e5b1861a710c87d634a5e5ce58d5d8dc647cede",
+                         "7d4e7b795c91a0a79c70d363f4bf93a835d1da8690f7812b8c2596032ce8c96b",
+                         1784685114U, 0x1d00ffff, 3169255732U));
+        // h=145144
+        ctx.push_back(mk(0x29e78000, "0000000000ba4bad937308c09c315375d8bc04807fbe976c7ac63c0f2a2b238b",
+                         "4cbaedc142c09b23c683ab94e9462b9c26dd11d29f366f0adf12f49064f3e315",
+                         1784686315U, 0x1d00ffff, 1395130410U));
+        // h=145145
+        ctx.push_back(mk(0x32ece000, "0000000000d2a78f9ac577828fdedade1c9e7c4b9c26a07b082be3e8ac84e7d3",
+                         "047bd42fbf8cb8fb5b3306dfc92173cf3f546dbfa153c3a44289b7c716546dd0",
+                         1784687516U, 0x1d00ffff, 1635188866U));
+        // h=145146
+        ctx.push_back(mk(0x27f38000, "000000000051c6c7a26efb38edfd0168028e37850f81d88a0155649b5cf6dd6d",
+                         "ac4218d9ed83a80b003e2f4d7536e011fd90460c9f7a36e498b591eab7b3c419",
+                         1784688717U, 0x1d00ffff, 1412497870U));
+        // h=145147
+        ctx.push_back(mk(0x2c852000, "000000000061ab701205c34a137e58e753a7e9da771ae8a5c05a8497111e7b4a",
+                         "8f2698c9bf42e82087a200bb555c3f73ab1bc3643534461dd6571867d060fdf5",
+                         1784689918U, 0x1d00ffff, 860947120U));
+        // h=145148
+        ctx.push_back(mk(0x26ac8000, "0000000000171506feab172badf069c8af59e836936cfb482ce4c7c5ae75fe1e",
+                         "39363e587daed4b560d58d7b5e97843f58ad70b35ecc09e4b6bd93ab65f214d1",
+                         1784691119U, 0x1d00ffff, 456852056U));
+        // h=145149
+        ctx.push_back(mk(0x32204000, "00000000009572b52135e98b588efe5782d9598f083135116968e445b6ab6e4f",
+                         "98e105cb5e6a98c8d4537f8b50ded866d0276015c56e8e7c8668e603c5e85e64",
+                         1784692320U, 0x1d00ffff, 3257532690U));
+        // h=145150
+        ctx.push_back(mk(0x31baa000, "0000000000ee6364dc9a9e2d711ae3e4b550c3e1a82bcf52236bad294bcc0031",
+                         "f5cebdb44ccca66224524693720754b590b1d4160cd89d816fc9f9795043d695",
+                         1784693521U, 0x1d00ffff, 1284767758U));
+        // h=145151 (real-difficulty block; parent of the pinned 145152)
+        ctx.push_back(mk(0x20d28000, "0000000000e3c0fa33fe245a4efe83184034455ce956e4793b9f691ba521e0ba",
+                         "60ef6f87d93368bf282ab2f48334a10985f3b5db77925b325b0c5c93cf551452",
+                         1784687517U, 0x190228f4, 3046116884U));
+        initialized = true;
+    }
+    return ctx;
 }
 
 // Genesis header for Mainnet at height 800000 (BATHRON SPV starting point).
@@ -164,6 +256,7 @@ std::string BtcHeaderStatusToString(BtcHeaderStatus status) {
         case BtcHeaderStatus::INVALID_TIMESTAMP_FUTURE: return "future-timestamp";
         case BtcHeaderStatus::INVALID_TIMESTAMP_MTP: return "timestamp-below-mtp";
         case BtcHeaderStatus::INVALID_RETARGET: return "invalid-retarget";
+        case BtcHeaderStatus::INVALID_TIMEWARP: return "timewarp-attack";
         case BtcHeaderStatus::INVALID_CHECKPOINT: return "checkpoint-mismatch";
         case BtcHeaderStatus::DUPLICATE: return "duplicate";
         case BtcHeaderStatus::ORPHAN: return "orphan";
@@ -172,7 +265,7 @@ std::string BtcHeaderStatusToString(BtcHeaderStatus status) {
 }
 
 // CBtcSPV implementation
-CBtcSPV::CBtcSPV() : m_bestHeight(0), m_minSupportedHeight(UINT32_MAX), m_testnet(false) {
+CBtcSPV::CBtcSPV() : m_bestHeight(0), m_minSupportedHeight(UINT32_MAX) {
     m_bestTipHash.SetNull();
     m_bestChainWork = 0;
 }
@@ -181,43 +274,96 @@ CBtcSPV::~CBtcSPV() {
     Shutdown();
 }
 
-bool CBtcSPV::Init(const std::string& datadir, bool testnet) {
+bool CBtcSPV::Init(const std::string& datadir, BtcSourceNet sourceNet) {
     LOCK(m_cs_spv);
-    return InitLocked(datadir, testnet);
+    return InitLocked(datadir, sourceNet);
 }
 
-bool CBtcSPV::InitLocked(const std::string& datadir, bool testnet) {
+bool CBtcSPV::InitForTest(const std::string& datadir, const BtcNetworkParams& params,
+                          const std::vector<BtcCheckpoint>& checkpoints,
+                          const BtcBlockHeader* pinnedHeader) {
+    // TEST-ONLY: explicit harness params (cheap powLimit for synthetic mining).
+    // Never a Bitcoin network; production init goes through InitLocked.
+    LOCK(m_cs_spv);
+    m_datadir = datadir;
+    m_netParams = params;
+    m_checkpoints = checkpoints;
+    m_hasGenesisCheckpointHeader = false;
+    if (pinnedHeader) {
+        m_genesisCheckpointHeader = *pinnedHeader;
+        m_hasGenesisCheckpointHeader = true;
+    }
+    return InitCommonLocked(datadir);
+}
+
+bool CBtcSPV::InitLocked(const std::string& datadir, BtcSourceNet sourceNet) {
     // MUST be called with m_cs_spv held
-    m_testnet = testnet;
+    m_sourceNet = sourceNet;
     m_datadir = datadir;  // Store for Reload()
 
-    // Set network params
-    m_netParams = testnet ? GetBtcSignetParams() : GetBtcMainnetParams();
-    m_checkpoints = testnet ? GetBtcSignetCheckpoints() : GetBtcMainnetCheckpoints();
+    // Set network params — from the COMMITTED source network, never a runtime flag.
+    const bool t4 = (sourceNet == BtcSourceNet::BITCOIN_TESTNET4);
+    m_netParams = t4 ? GetBtcTestnet4Params() : GetBtcMainnetParams();
+    m_checkpoints = t4 ? GetBtcTestnet4Checkpoints() : GetBtcMainnetCheckpoints();
 
     // BP-BTCHEADERS-HARDENING: load the FULL header of the genesis checkpoint and
     // SELF-CHECK it hashes to the checkpoint hash. This header is the difficulty
     // parent for the first seeded BTC header (so R6 validates it during bootstrap
     // instead of trusting the seeder). A wrong hardcode aborts the node here rather
-    // than silently shipping a corrupt anchor (this is exactly the guard that the
-    // earlier mistranscribed signet header would have tripped). Regtest has no BTC
-    // checkpoint, so it simply has no genesis header (R6 is unconditional there).
+    // than silently shipping a corrupt anchor.
     m_hasGenesisCheckpointHeader = false;
     if (!m_checkpoints.empty()) {
-        const BtcCheckpoint& gcp = m_testnet ? m_checkpoints.back() : m_checkpoints.front();
-        bool gotHeader = m_testnet ? GetBtcSignetGenesisHeader(m_genesisCheckpointHeader)
-                                   : GetBtcMainnetGenesisHeader(m_genesisCheckpointHeader);
+        const BtcCheckpoint* gcp = nullptr;
+        for (const auto& cp : m_checkpoints) {
+            if (cp.height == m_netParams.genesisCheckpointHeight) { gcp = &cp; break; }
+        }
+        if (!gcp) {
+            LogPrintf("BTC-SPV: FATAL — no checkpoint at genesisCheckpointHeight %u\n",
+                      m_netParams.genesisCheckpointHeight);
+            return false;
+        }
+        bool gotHeader = t4 ? GetBtcTestnet4GenesisHeader(m_genesisCheckpointHeader)
+                            : GetBtcMainnetGenesisHeader(m_genesisCheckpointHeader);
         if (gotHeader) {
-            if (m_genesisCheckpointHeader.GetHash() != gcp.hash) {
+            if (m_genesisCheckpointHeader.GetHash() != gcp->hash) {
                 LogPrintf("BTC-SPV: FATAL — hardcoded genesis header at %u hashes to %s, expected %s\n",
-                          gcp.height, m_genesisCheckpointHeader.GetHash().ToString(), gcp.hash.ToString());
+                          gcp->height, m_genesisCheckpointHeader.GetHash().ToString(), gcp->hash.ToString());
                 return false;
             }
             m_hasGenesisCheckpointHeader = true;
-            LogPrintf("BTC-SPV: genesis checkpoint header at %u verified (hash matches)\n", gcp.height);
+            LogPrintf("BTC-SPV: genesis checkpoint header at %u verified (hash matches, source=%s)\n",
+                      gcp->height, BtcSourceNetToString(sourceNet));
         }
     }
 
+    // MTP context below the pin (testnet4): verify the pinned real headers
+    // chain into the genesis checkpoint header, then index them by height.
+    // A bad literal aborts startup, exactly like a bad pinned header.
+    m_genesisContext.clear();
+    if (t4 && m_hasGenesisCheckpointHeader) {
+        const std::vector<BtcBlockHeader>& ctx = GetBtcTestnet4GenesisContext();
+        const uint32_t firstHeight = m_netParams.genesisCheckpointHeight - (uint32_t)ctx.size();
+        for (size_t i = 0; i < ctx.size(); i++) {
+            const uint256 expectedChild = (i + 1 < ctx.size())
+                ? ctx[i + 1].hashPrevBlock
+                : m_genesisCheckpointHeader.hashPrevBlock;
+            if (ctx[i].GetHash() != expectedChild) {
+                LogPrintf("BTC-SPV: FATAL — genesis MTP context broken at %u (hashes to %s, child expects %s)\n",
+                          firstHeight + (uint32_t)i, ctx[i].GetHash().ToString(),
+                          expectedChild.ToString());
+                return false;
+            }
+            m_genesisContext[firstHeight + (uint32_t)i] = ctx[i];
+        }
+        LogPrintf("BTC-SPV: genesis MTP context %u..%u verified (chains into the pin)\n",
+                  firstHeight, m_netParams.genesisCheckpointHeight - 1);
+    }
+
+    return InitCommonLocked(datadir);
+}
+
+bool CBtcSPV::InitCommonLocked(const std::string& datadir) {
+    // MUST be called with m_cs_spv held; params/checkpoints/pinned header set.
     // Open database
     std::string dbpath = datadir + "/btcspv";
     try {
@@ -230,13 +376,35 @@ bool CBtcSPV::InitLocked(const std::string& datadir, bool testnet) {
         return false;
     }
 
+    // Source-network tag (M-3, PHASE 2.6 review): a store built while tracking
+    // another Bitcoin network (e.g. a signet-era datadir) is REFUSED instead of
+    // silently serving its stale tip/min-height. First open stamps the tag.
+    {
+        uint8_t storedNet = 0;
+        if (m_db->Read(std::make_pair(DB_SOURCE_NET, 0), storedNet)) {
+            if (storedNet != (uint8_t)m_sourceNet) {
+                LogPrintf("BTC-SPV: FATAL — btcspv store was built for source net %u, "
+                          "this node is committed to %s. Wipe %s to resync.\n",
+                          storedNet, BtcSourceNetToString(m_sourceNet), dbpath);
+                m_db.reset();
+                return false;
+            }
+        } else {
+            m_db->Write(std::make_pair(DB_SOURCE_NET, 0), (uint8_t)m_sourceNet);
+        }
+    }
+
     // Load tip from database (no nested lock - LoadTipLocked expects lock held)
     if (!LoadTipLocked()) {
         // Initialize with genesis or checkpoint
         if (!m_checkpoints.empty()) {
-            // For Signet: use the LAST checkpoint (286000) as starting point
-            // This is where we have the full header hardcoded
-            const BtcCheckpoint& cp = m_testnet ? m_checkpoints.back() : m_checkpoints.front();
+            // Start from the genesis checkpoint (the one whose full header is
+            // pinned in code — testnet4 145152 / mainnet 800000).
+            const BtcCheckpoint* gcpp = nullptr;
+            for (const auto& c : m_checkpoints) {
+                if (c.height == m_netParams.genesisCheckpointHeight) { gcpp = &c; break; }
+            }
+            const BtcCheckpoint& cp = gcpp ? *gcpp : m_checkpoints.front();
             m_bestTipHash = cp.hash;
             m_bestHeight = cp.height;
             m_bestChainWork = cp.chainWork;
@@ -247,7 +415,7 @@ bool CBtcSPV::InitLocked(const std::string& datadir, bool testnet) {
             cpIndex.height = cp.height;
             cpIndex.SetChainWork(cp.chainWork);
 
-            // Use the verified hardcoded genesis header (signet 286000 / mainnet
+            // Use the verified hardcoded genesis header (testnet4 145152 / mainnet
             // 800000) so the checkpoint carries its real header for chain validation.
             if (m_hasGenesisCheckpointHeader && cp.hash == m_genesisCheckpointHeader.GetHash()) {
                 cpIndex.header = m_genesisCheckpointHeader;
@@ -269,6 +437,20 @@ bool CBtcSPV::InitLocked(const std::string& datadir, bool testnet) {
 
             LogPrintf("BTC-SPV: Initialized from checkpoint at height %d (min_supported=%d)\n",
                       cp.height, m_minSupportedHeight);
+
+            // Store the pinned MTP context headers (below the pin) so the
+            // 11-block median-time-past walk crosses the pin exactly as
+            // Bitcoin Core's does. They carry no chainwork and are not part
+            // of the best-height index — pure ancestry for MTP.
+            for (const auto& kv : m_genesisContext) {
+                BtcHeaderIndex ctxIndex;
+                ctxIndex.hash = kv.second.GetHash();
+                ctxIndex.hashPrevBlock = kv.second.hashPrevBlock;
+                ctxIndex.height = kv.first;
+                ctxIndex.SetChainWork(arith_uint256());
+                ctxIndex.header = kv.second;
+                StoreHeaderLocked(ctxIndex);
+            }
         } else {
             // Start from genesis
             m_bestTipHash = m_netParams.genesisHash;
@@ -281,8 +463,9 @@ bool CBtcSPV::InitLocked(const std::string& datadir, bool testnet) {
         StoreTipLocked();
     }
 
-    LogPrintf("BTC-SPV: Initialized. Tip height=%d hash=%s testnet=%d\n",
-              m_bestHeight, m_bestTipHash.ToString().substr(0, 16), testnet);
+    LogPrintf("BTC-SPV: Initialized. Tip height=%d hash=%s btc_source=%s\n",
+              m_bestHeight, m_bestTipHash.ToString().substr(0, 16),
+              BtcSourceNetToString(m_sourceNet));
     return true;
 }
 
@@ -334,7 +517,7 @@ bool CBtcSPV::Reload() {
     ShutdownLocked();
 
     // Re-initialize (no nested lock)
-    if (!InitLocked(m_datadir, m_testnet)) {
+    if (!InitLocked(m_datadir, m_sourceNet)) {
         LogPrintf("BTC-SPV: Reload FAILED - Init returned false\n");
         // State is now inconsistent - SPV is unavailable until next restart
         // This is acceptable for ops scenarios
@@ -636,50 +819,35 @@ bool CBtcSPV::CheckTimestampLocked(const BtcBlockHeader& header, const BtcHeader
 }
 
 bool CBtcSPV::CheckDifficultyRetargetLocked(const BtcBlockHeader& header, const BtcHeaderIndex& prev) const {
-    // MUST be called with m_cs_spv held
+    // MUST be called with m_cs_spv held.
+    // Ancestors are resolved by PARENT LINKS from `prev` (not the best-chain
+    // height index) so side branches are validated against their own history.
+    // The cursor only ever moves down: ExpectedNextBits requests heights in
+    // non-increasing order (min-difficulty walk-back, then/or period-first).
     uint32_t height = prev.height + 1;
-
-    // Retarget every 2016 blocks
-    if (height % 2016 != 0) {
-        // No retarget: nBits must match previous
-        return header.nBits == prev.header.nBits;
-    }
-
-    // Get first block of this retarget period
-    BtcHeaderIndex first;
-    if (!GetHeaderAtHeightLocked(height - 2016, first)) {
-        // Can't verify - rely on checkpoints for testnet
-        if (m_testnet) {
-            LogPrint(BCLog::NET, "BTC-SPV: Cannot verify retarget at %d (missing ancestor), relying on checkpoint\n", height);
-            return true;
+    BtcHeaderIndex cursor = prev;
+    bool cursorValid = true;
+    auto getAncestor = [this, &cursor, &cursorValid](uint32_t h, BtcBlockHeader& out) {
+        if (!cursorValid || h > cursor.height) return false;
+        while (cursor.height > h) {
+            BtcHeaderIndex up;
+            if (!GetHeaderLocked(cursor.hashPrevBlock, up)) { cursorValid = false; return false; }
+            cursor = up;
         }
+        if (cursor.header.IsNull()) return false;
+        out = cursor.header;
+        return true;
+    };
+
+    uint32_t expected = ExpectedNextBits(height, prev.header, header.nTime, getAncestor);
+    if (expected == 0) {
+        // Required ancestor unavailable (below the pinned checkpoint). Strict:
+        // reject — the testnet4 pin sits on a retarget boundary precisely so
+        // this can only happen on a malformed branch.
+        LogPrint(BCLog::NET, "BTC-SPV: retarget unverifiable at height %d (missing ancestor)\n", height);
         return false;
     }
-
-    int64_t actualTime = prev.header.nTime - first.header.nTime;
-
-    // Clamp to [0.25x, 4x] adjustment
-    const int64_t targetTimespan = 2016 * 600;  // 2 weeks in seconds
-    if (actualTime < targetTimespan / 4) {
-        actualTime = targetTimespan / 4;
-    }
-    if (actualTime > targetTimespan * 4) {
-        actualTime = targetTimespan * 4;
-    }
-
-    // Calculate new target
-    arith_uint256 newTarget;
-    newTarget.SetCompact(prev.header.nBits);
-    newTarget *= actualTime;
-    newTarget /= targetTimespan;
-
-    // Cap at powLimit
-    if (newTarget > m_netParams.powLimit) {
-        newTarget = m_netParams.powLimit;
-    }
-
-    // Check header matches expected (compare compact form)
-    return header.nBits == newTarget.GetCompact();
+    return header.nBits == expected;
 }
 
 bool CBtcSPV::GetCheckpointHash(uint32_t height, uint256& hashOut) const {
@@ -699,10 +867,17 @@ uint32_t CBtcSPV::HighestCheckpointHeight() const {
 
 bool CBtcSPV::GetGenesisCheckpoint(uint32_t& heightOut, uint256& hashOut) const {
     if (m_checkpoints.empty()) return false;
-    // Matches Init: signet uses the LAST checkpoint (286000), mainnet the first.
-    const BtcCheckpoint& cp = m_testnet ? m_checkpoints.back() : m_checkpoints.front();
-    heightOut = cp.height;
-    hashOut = cp.hash;
+    // Matches Init: the checkpoint at genesisCheckpointHeight (the one whose
+    // full header is pinned in code).
+    for (const auto& cp : m_checkpoints) {
+        if (cp.height == m_netParams.genesisCheckpointHeight) {
+            heightOut = cp.height;
+            hashOut = cp.hash;
+            return true;
+        }
+    }
+    heightOut = m_checkpoints.front().height;
+    hashOut = m_checkpoints.front().hash;
     return true;
 }
 
@@ -712,30 +887,86 @@ bool CBtcSPV::GetGenesisCheckpointHeader(BtcBlockHeader& out) const {
     return true;
 }
 
+bool CBtcSPV::GetGenesisContextHeader(uint32_t height, BtcBlockHeader& out) const {
+    // No lock: m_genesisContext / pinned header are immutable post-init.
+    if (m_hasGenesisCheckpointHeader && height == m_netParams.genesisCheckpointHeight) {
+        out = m_genesisCheckpointHeader;
+        return true;
+    }
+    auto it = m_genesisContext.find(height);
+    if (it == m_genesisContext.end()) return false;
+    out = it->second;
+    return true;
+}
+
 uint32_t CBtcSPV::ExpectedNextBits(uint32_t height, const BtcBlockHeader& parent,
-                                   const BtcBlockHeader* periodFirst) const {
+                                   uint32_t newHeaderTime,
+                                   const std::function<bool(uint32_t, BtcBlockHeader&)>& getAncestor) const {
     // No lock: pure function of m_netParams (immutable post-init) + inputs.
-    // No retarget: nBits must equal the parent's.
-    if (height % 2016 != 0) {
+    // Faithful port of Bitcoin Core v28.1 GetNextWorkRequired /
+    // CalculateNextWorkRequired (pow.cpp), including the Testnet4
+    // min-difficulty exception and the BIP-94 first-block retarget base.
+    const uint32_t interval = (uint32_t)m_netParams.DifficultyAdjustmentInterval();
+    const uint32_t powLimitCompact = m_netParams.powLimit.GetCompact();
+
+    if (height % interval != 0) {
+        if (m_netParams.fPowAllowMinDifficultyBlocks) {
+            // 20-minute exception: a block whose timestamp is more than
+            // 2*spacing past its parent MUST carry powLimit nBits (Core
+            // enforces exact equality with GetNextWorkRequired's result).
+            if ((int64_t)newHeaderTime > (int64_t)parent.nTime + m_netParams.nPowTargetSpacing * 2) {
+                return powLimitCompact;
+            }
+            // Otherwise: nBits of the last non-min-difficulty block of the
+            // period (walk back; the first block of a period never carries
+            // the min-difficulty exception, so the walk stops there).
+            BtcBlockHeader idx = parent;
+            uint32_t idxHeight = height - 1;
+            while (idxHeight != 0 && idxHeight % interval != 0 && idx.nBits == powLimitCompact) {
+                BtcBlockHeader up;
+                if (!getAncestor(idxHeight - 1, up)) {
+                    return 0; // ancestor unavailable -> caller decides
+                }
+                idx = up;
+                idxHeight--;
+            }
+            return idx.nBits;
+        }
         return parent.nBits;
     }
-    // Retarget boundary: need the first header of the period (height-2016).
-    if (!periodFirst) {
-        return 0; // unavailable -> caller decides (testnet: rely on checkpoints)
+
+    // Retarget boundary: need the first header of the closing period.
+    BtcBlockHeader firstHdr;
+    if (!getAncestor(height - interval, firstHdr)) {
+        return 0; // unavailable -> caller decides
     }
-    int64_t actualTime = (int64_t)parent.nTime - (int64_t)periodFirst->nTime;
-    const int64_t targetTimespan = 2016 * 600; // 2 weeks
+
+    int64_t actualTime = (int64_t)parent.nTime - (int64_t)firstHdr.nTime;
+    const int64_t targetTimespan = m_netParams.nPowTargetTimespan;
     if (actualTime < targetTimespan / 4) actualTime = targetTimespan / 4;
     if (actualTime > targetTimespan * 4) actualTime = targetTimespan * 4;
 
     arith_uint256 newTarget;
-    newTarget.SetCompact(parent.nBits);
+    // BIP-94 block-storm fix: the retarget base is the FIRST block of the
+    // closing period (its difficulty is real — the min-difficulty exception
+    // never applies on a boundary). Legacy (mainnet): the last block.
+    newTarget.SetCompact(m_netParams.enforceBIP94 ? firstHdr.nBits : parent.nBits);
     newTarget *= actualTime;
     newTarget /= targetTimespan;
     if (newTarget > m_netParams.powLimit) {
         newTarget = m_netParams.powLimit;
     }
     return newTarget.GetCompact();
+}
+
+bool CBtcSPV::CheckTimewarp(uint32_t height, const BtcBlockHeader& header,
+                            const BtcBlockHeader& parent) const {
+    // BIP-94 timewarp rule (Core validation.cpp ContextualCheckBlockHeader):
+    // the first block of a difficulty period may not be earlier than the last
+    // block of the previous period minus BTC_MAX_TIMEWARP (600 s).
+    if (!m_netParams.enforceBIP94) return true;
+    if (height % (uint32_t)m_netParams.DifficultyAdjustmentInterval() != 0) return true;
+    return (int64_t)header.nTime >= (int64_t)parent.nTime - BTC_MAX_TIMEWARP;
 }
 
 bool CBtcSPV::ValidateHeaderLocked(const BtcBlockHeader& header, const BtcHeaderIndex& prev,
@@ -766,16 +997,20 @@ bool CBtcSPV::ValidateHeaderLocked(const BtcBlockHeader& header, const BtcHeader
         return false;
     }
 
-    // 4. Check difficulty retarget
+    // 4. Check difficulty retarget — STRICT on every network. (The old
+    // signet-era "log only" advisory path is gone: Testnet4 difficulty is
+    // real and fully verifiable from headers, and a lax path here would let
+    // a CPU-mined branch carry fake burns.)
     if (!CheckDifficultyRetargetLocked(header, prev)) {
-        if (m_testnet) {
-            // On Signet, log warning but rely on checkpoint anchoring
-            LogPrint(BCLog::NET, "BTC-SPV: Signet retarget mismatch at height %d (checkpoint anchoring enforced)\n",
-                     prev.height + 1);
-        } else {
-            status = BtcHeaderStatus::INVALID_RETARGET;
-            return false;
-        }
+        status = BtcHeaderStatus::INVALID_RETARGET;
+        return false;
+    }
+
+    // 5. BIP-94 timewarp bound (Testnet4): first block of a period may not be
+    // earlier than its parent minus 600 s.
+    if (!CheckTimewarp(prev.height + 1, header, prev.header)) {
+        status = BtcHeaderStatus::INVALID_TIMEWARP;
+        return false;
     }
 
     status = BtcHeaderStatus::VALID;
@@ -1036,7 +1271,7 @@ BtcHeaderStatus CBtcSPV::AddHeader(const BtcBlockHeader& header) {
     // A7 checkpoints verify chain identity at halving boundaries.
     // This ensures BATHRON only accepts THE Bitcoin chain, not forks.
     // ═══════════════════════════════════════════════════════════════════════
-    if (!VerifyCanonicalChain(index.height, index.hash, m_testnet)) {
+    if (!VerifyCanonicalChain(index.height, index.hash, m_sourceNet)) {
         return BtcHeaderStatus::INVALID_CHECKPOINT;  // Reuse status - same effect
     }
 
@@ -1229,10 +1464,14 @@ const std::vector<A7Checkpoint>& GetA7MainnetCheckpoints() {
             420000,
             uint256S("000000000000000002cce816c0ab2c5c269cb081896b7dcb34b8422d6b74ffa1")
         });
-        // Third halving (May 2020)
+        // Third halving (May 2020). NOTE: this constant was WRONG from its
+        // introduction (d3895ec8) until 2026-08-03 — dead code in practice
+        // (mainnet pin 800000 > 630000, never evaluated), caught by the PHASE
+        // 2.6 hostile review. Corrected value verified on mempool.space +
+        // mempool.emzy.de.
         checkpoints.push_back({
             630000,
-            uint256S("0000000000000000000f2adce67e49b0b6bdeb9de8b7c3d7e93b21e7fc1e819d")
+            uint256S("000000000000000000024bead8df69990852c202db0e0097c1a12ea637d7e96d")
         });
         // Fourth halving (Apr 2024)
         checkpoints.push_back({
@@ -1244,24 +1483,31 @@ const std::vector<A7Checkpoint>& GetA7MainnetCheckpoints() {
     return checkpoints;
 }
 
-// A7 Signet checkpoints (fewer checkpoints for test network)
-const std::vector<A7Checkpoint>& GetA7SignetCheckpoints() {
+// A7 Testnet4 checkpoints (fewer checkpoints for test network).
+// Provenance (2026-08-03): cross-verified on local Bitcoin Core v28.1 (full
+// header validation), mempool.space/testnet4 and mempool.emzy.de/testnet4.
+const std::vector<A7Checkpoint>& GetA7Testnet4Checkpoints() {
     static std::vector<A7Checkpoint> checkpoints;
     static bool initialized = false;
     if (!initialized) {
-        // Signet block 200000 (arbitrary but stable checkpoint)
+        // Retarget boundary 72*2016 (the SPV genesis checkpoint)
         checkpoints.push_back({
-            200000,
-            uint256S("0000007d60f5ffc47975418ac8331c0ea52cf551730ef7ead7ff9082a536f13c")
+            145152,
+            uint256S("00000000000000014694285ac2a2980339778e6b73d2199a65a5f62f2df44d2d")
+        });
+        // Recent stable anchor
+        checkpoints.push_back({
+            146000,
+            uint256S("00000000000774b867c9eabbc5eba5919e97bb8f7b06f9e86547c7f86966f054")
         });
         initialized = true;
     }
     return checkpoints;
 }
 
-bool VerifyCanonicalChain(uint32_t height, const uint256& blockHash, bool testnet) {
-    const std::vector<A7Checkpoint>& checkpoints = testnet ?
-        GetA7SignetCheckpoints() : GetA7MainnetCheckpoints();
+bool VerifyCanonicalChain(uint32_t height, const uint256& blockHash, BtcSourceNet sourceNet) {
+    const std::vector<A7Checkpoint>& checkpoints = (sourceNet == BtcSourceNet::BITCOIN_TESTNET4) ?
+        GetA7Testnet4Checkpoints() : GetA7MainnetCheckpoints();
 
     // Check each checkpoint - only enforced at exact heights
     for (const auto& cp : checkpoints) {

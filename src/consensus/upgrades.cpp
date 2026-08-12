@@ -50,10 +50,6 @@ const struct NUInfo NetworkUpgradeInfo[Consensus::MAX_NETWORK_UPGRADES] = {
                 /*.strInfo =*/ "M1 receipt consensus protection (bearer receipt guard)",
         },
         {
-                /*.strName =*/ "HU_posedecay",
-                /*.strInfo =*/ "PoSe decay on successful production only (makes the 3-strike ban reachable)",
-        },
-        {
                 /*.strName =*/ "HU_btcstate",
                 /*.strInfo =*/ "OP_BTCSTATEVERIFY (BTC header facts in script) + btcheaders max-reorg-depth",
         },

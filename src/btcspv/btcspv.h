@@ -6,10 +6,12 @@
 #define BATHRON_BTCSPV_H
 
 #include "arith_uint256.h"
+#include "btcspv/btcsourcenet.h"
 #include "serialize.h"
 #include "sync.h"
 #include "uint256.h"
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -66,7 +68,25 @@ struct BtcNetworkParams {
     uint256 genesisHash;
     uint16_t defaultPort;
     arith_uint256 powLimit;
+    // PoW schedule (Bitcoin Core consensus/params.h equivalents)
+    int64_t nPowTargetSpacing{600};
+    int64_t nPowTargetTimespan{14 * 24 * 60 * 60};
+    // Testnet4 only: 20-minute min-difficulty exception (never at a retarget
+    // boundary) — Core pow.cpp GetNextWorkRequired.
+    bool fPowAllowMinDifficultyBlocks{false};
+    // BIP-94 (Testnet4): retarget from the FIRST block of the closing period
+    // (block-storm fix) + timewarp bound on the first block of each period
+    // (nTime >= prev.nTime - MAX_TIMEWARP) — Core pow.cpp + validation.cpp.
+    bool enforceBIP94{false};
+    // Height of the checkpoint whose full 80-byte header is pinned in code
+    // (the SPV starting anchor). Replaces the old first-vs-last asymmetry.
+    uint32_t genesisCheckpointHeight{0};
+
+    int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
 };
+
+// BIP-94 timewarp bound (seconds) — Core src/consensus/consensus.h MAX_TIMEWARP.
+static constexpr int64_t BTC_MAX_TIMEWARP = 600;
 
 // Hardcoded checkpoint
 struct BtcCheckpoint {
@@ -83,6 +103,7 @@ enum class BtcHeaderStatus {
     INVALID_TIMESTAMP_FUTURE,
     INVALID_TIMESTAMP_MTP,
     INVALID_RETARGET,
+    INVALID_TIMEWARP,
     INVALID_CHECKPOINT,
     DUPLICATE,
     ORPHAN
@@ -98,8 +119,18 @@ public:
     CBtcSPV();
     ~CBtcSPV();
 
-    bool Init(const std::string& datadir, bool testnet = false);
+    bool Init(const std::string& datadir, BtcSourceNet sourceNet);
+    // TEST-ONLY: init with explicit (harness) network params instead of a named
+    // network — lets unit tests use a cheap powLimit for synthetic CPU-minable
+    // headers. Never called from production code; clearly-labeled harness
+    // params are NOT a Bitcoin network.
+    bool InitForTest(const std::string& datadir, const BtcNetworkParams& params,
+                     const std::vector<BtcCheckpoint>& checkpoints,
+                     const BtcBlockHeader* pinnedHeader);
     void Shutdown();
+
+    // The committed Bitcoin source network (immutable post-init).
+    BtcSourceNet GetSourceNet() const { return m_sourceNet; }
 
     // COMMIT 5: Hot reload - re-initialize SPV store without daemon restart
     // Returns true on success, false if reload failed (original state preserved on failure)
@@ -142,12 +173,26 @@ public:
     arith_uint256 GetBlockProof(const BtcBlockHeader& header) const;
 
     // BP-BTCHEADERS-REORG F1 (R6): expected nBits for a header at `height` given
-    // its `parent`. At a retarget boundary (height % 2016 == 0), `periodFirst`
-    // must be the header at height-2016; pass nullptr if unavailable (returns 0).
+    // its `parent` — faithful port of Core GetNextWorkRequired/
+    // CalculateNextWorkRequired (v28.1), including the Testnet4 min-difficulty
+    // exception and BIP-94 first-block retarget. `newHeaderTime` is the nTime of
+    // the header being validated (the min-difficulty exception depends on it).
+    // `getAncestor(h, out)` must return the header at height `h` on the chain
+    // being validated; it is only called for heights within the closing
+    // difficulty period. Returns 0 if a required ancestor is unavailable
+    // (caller decides: bootstrap cross-tx gap vs hard reject).
     // Pure function of m_netParams (immutable post-init) + inputs — no lock,
     // no local chain state. Lets consensus validate difficulty from btcheadersdb.
     uint32_t ExpectedNextBits(uint32_t height, const BtcBlockHeader& parent,
-                              const BtcBlockHeader* periodFirst) const;
+                              uint32_t newHeaderTime,
+                              const std::function<bool(uint32_t, BtcBlockHeader&)>& getAncestor) const;
+
+    // BIP-94 timewarp rule (Core validation.cpp ContextualCheckBlockHeader):
+    // on the first block of a difficulty period, nTime must be >=
+    // prev.nTime - BTC_MAX_TIMEWARP. Always true when the network does not
+    // enforce BIP-94. Pure function — no lock.
+    bool CheckTimewarp(uint32_t height, const BtcBlockHeader& header,
+                       const BtcBlockHeader& parent) const;
 
     // BP-BTCHEADERS-REORG F5/F6: consensus access to the per-network BTC
     // checkpoints (immutable post-init). No lock, no local chain state.
@@ -161,7 +206,7 @@ public:
     void AddCheckpointForTest(uint32_t height, const uint256& hash) {
         m_checkpoints.push_back({height, hash, arith_uint256()});
     }
-    // The SPV genesis checkpoint (signet 286000 / mainnet 800000).
+    // The SPV genesis checkpoint (testnet4 145152 / mainnet 800000).
     bool GetGenesisCheckpoint(uint32_t& heightOut, uint256& hashOut) const;
     // BP-BTCHEADERS-HARDENING: the FULL header of the genesis checkpoint, used as
     // the difficulty parent for the first seeded header so R6 can validate it
@@ -169,10 +214,19 @@ public:
     // trusting the genesis seeder). Hardcoded per network + hash-checked at init.
     bool HasGenesisCheckpointHeader() const { return m_hasGenesisCheckpointHeader; }
     bool GetGenesisCheckpointHeader(BtcBlockHeader& out) const;
+    // MTP context: the pinned REAL headers immediately below the genesis
+    // checkpoint (testnet4: 145142..145151), linkage-verified against the pin
+    // at init. They exist so the 11-block median-time-past window near the pin
+    // matches Bitcoin Core exactly (real Testnet4 has negative timestamp gaps
+    // — e.g. 145156 is 6375 s earlier than its parent — which a truncated
+    // window would wrongly reject). Returns the context header at `height`
+    // (the pin itself included); false outside the pinned range.
+    bool GetGenesisContextHeader(uint32_t height, BtcBlockHeader& out) const;
 
 private:
     // Internal locked versions - MUST be called with m_cs_spv held
-    bool InitLocked(const std::string& datadir, bool testnet);
+    bool InitLocked(const std::string& datadir, BtcSourceNet sourceNet);
+    bool InitCommonLocked(const std::string& datadir);
     void ShutdownLocked();
     bool ValidateHeaderLocked(const BtcBlockHeader& header, const BtcHeaderIndex& prev, BtcHeaderStatus& status) const;
     bool CheckTimestampLocked(const BtcBlockHeader& header, const BtcHeaderIndex& prev) const;
@@ -199,7 +253,8 @@ private:
     std::vector<BtcCheckpoint> m_checkpoints;
     BtcBlockHeader m_genesisCheckpointHeader;       // full header at the genesis checkpoint
     bool m_hasGenesisCheckpointHeader{false};        // false until hardcoded+verified for this net
-    bool m_testnet;
+    std::map<uint32_t, BtcBlockHeader> m_genesisContext; // pinned MTP context below the pin
+    BtcSourceNet m_sourceNet{BtcSourceNet::BITCOIN_MAINNET};
     std::string m_datadir;  // Stored for Reload()
     mutable std::map<uint256, BtcHeaderIndex> m_headerCache;
     static const size_t MAX_CACHE_SIZE = 1000;
@@ -209,13 +264,17 @@ private:
 extern std::unique_ptr<CBtcSPV> g_btc_spv;
 
 const BtcNetworkParams& GetBtcMainnetParams();
-const BtcNetworkParams& GetBtcSignetParams();
+const BtcNetworkParams& GetBtcTestnet4Params();
 const std::vector<BtcCheckpoint>& GetBtcMainnetCheckpoints();
-const std::vector<BtcCheckpoint>& GetBtcSignetCheckpoints();
+const std::vector<BtcCheckpoint>& GetBtcTestnet4Checkpoints();
 
-// Genesis header for Signet (hardcoded at height 286000)
-// This allows new nodes to initialize btcspv without external snapshot
-bool GetBtcSignetGenesisHeader(BtcBlockHeader& header);
+// Genesis header for Testnet4 (hardcoded at height 145152, a retarget
+// boundary — its nBits seeds the next BIP-94 retarget and the min-difficulty
+// walk-back can never need an ancestor below it).
+bool GetBtcTestnet4GenesisHeader(BtcBlockHeader& header);
+// The 10 REAL Testnet4 headers 145142..145151 (MTP context below the pin) —
+// linkage self-verified at init: they chain into the pinned 145152 header.
+const std::vector<BtcBlockHeader>& GetBtcTestnet4GenesisContext();
 // Genesis header for Mainnet (hardcoded at height 800000), verified to hash to
 // the mainnet genesis checkpoint. Difficulty anchor for the first seeded header.
 bool GetBtcMainnetGenesisHeader(BtcBlockHeader& header);
@@ -244,9 +303,9 @@ struct A7Checkpoint {
 const std::vector<A7Checkpoint>& GetA7MainnetCheckpoints();
 
 /**
- * Get A7 checkpoints for Signet (test network - fewer checkpoints).
+ * Get A7 checkpoints for Testnet4 (test network - fewer checkpoints).
  */
-const std::vector<A7Checkpoint>& GetA7SignetCheckpoints();
+const std::vector<A7Checkpoint>& GetA7Testnet4Checkpoints();
 
 /**
  * Verify that the header at a checkpoint height matches the expected hash.
@@ -256,9 +315,9 @@ const std::vector<A7Checkpoint>& GetA7SignetCheckpoints();
  *
  * @param height The height of the header being added
  * @param blockHash The hash of the header
- * @param testnet True if testnet/signet, false for mainnet
+ * @param sourceNet The committed Bitcoin source network
  * @return true if valid (not a checkpoint height, or matches expected hash)
  */
-bool VerifyCanonicalChain(uint32_t height, const uint256& blockHash, bool testnet);
+bool VerifyCanonicalChain(uint32_t height, const uint256& blockHash, BtcSourceNet sourceNet);
 
 #endif // BATHRON_BTCSPV_H

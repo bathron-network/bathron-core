@@ -43,10 +43,16 @@ uint256 BtcHeadersPayload::GetSignatureHash() const
     return ss.GetHash();
 }
 
-bool BtcHeadersPayload::VerifySignature() const
+bool BtcHeadersPayload::VerifySignature(const CDeterministicMNList& mnList) const
 {
-    // Get MN from DMN manager (use GetListAtChainTip().GetMN())
-    auto dmn = deterministicMNManager->GetListAtChainTip().GetMN(publisherProTxHash);
+    // AUD-001 (LOT 5): the list is supplied by the caller. This used to read
+    // GetListAtChainTip() — node-local mutable state — which is why a consensus
+    // verdict moved with the local tip. NO CONSENSUS CALLER REMAINS: CheckBtcHeadersTx
+    // verifies inline against the dmn it already resolved from the block's parent.
+    // The callers left are the local publisher (pre-flight self-check) and an RPC,
+    // for which "the list at my tip" is the right question — but they now have to
+    // say so.
+    auto dmn = mnList.GetMN(publisherProTxHash);
     if (!dmn) {
         return false;
     }
@@ -156,7 +162,14 @@ static bool BtcMtpBefore(const BtcHeadersPayload& payload, size_t idx, uint32_t&
         uint32_t h = payload.startHeight - 1;
         while (t.size() < 11) {
             BtcBlockHeader hdr;
-            if (!g_btcheadersdb || !g_btcheadersdb->GetHeaderByHeight(h, hdr)) break;
+            bool have = g_btcheadersdb && g_btcheadersdb->GetHeaderByHeight(h, hdr);
+            // Below the consensus DB floor (the genesis seed starts at
+            // pin+1), fall back to the pinned MTP context (the pin and the
+            // 10 real headers below it) so the 11-block window matches
+            // Bitcoin Core exactly — real Testnet4 has negative timestamp
+            // gaps that a truncated window would wrongly reject.
+            if (!have && g_btc_spv && g_btc_spv->GetGenesisContextHeader(h, hdr)) have = true;
+            if (!have) break;
             t.push_back(hdr.nTime);
             if (h == 0) break;
             h--;
@@ -219,16 +232,50 @@ bool CheckBtcHeadersTx(const CTransaction& tx,
     }
 
     if (!skipMNChecks) {
-        // R1: Publisher must be registered MN
-        auto dmn = deterministicMNManager->GetListAtChainTip().GetMN(payload.publisherProTxHash);
+        // ═══════════════════════════════════════════════════════════════════════
+        // AUD-001 (LOT 5) — R1 AND R2 ARE RESOLVED FROM THE BLOCK'S OWN PARENT.
+        //
+        // Both used to read `deterministicMNManager->GetListAtChainTip()`: R1 here
+        // and R2 a second time inside VerifySignature(). pindexPrev was passed in
+        // and then ignored. That made TWO consensus verdicts — is the publisher a
+        // registered MN, and does its operator key verify — functions of where this
+        // node's tip pointer happens to sit, which is node-local mutable state and
+        // is NOT reconstructible from the block. It was the only consensus rule in
+        // the tree doing this; every other one (ProReg/ProUpServ/ProUpReg/ProUpRev,
+        // mn_validation, signaling, finality) already used the parent.
+        //
+        // Consequences that were real, with no attacker involved:
+        //   - ReplayBlocks (init.cpp) runs ProcessSpecialTxsInBlock while tipIndex is
+        //     still NULL. GetListAtChainTip() returns an EMPTY list when tipIndex is
+        //     null, so EVERY publisher was unknown and any unclean shutdown that left
+        //     the coins DB one block behind a post-bootstrap TX_BTC_HEADERS failed
+        //     replay and forced a -reindex.
+        //   - VerifyDB at -checklevel=4 re-connects historical blocks while the tip
+        //     stays at the real tip, judging every replayed block against a FUTURE
+        //     MN list — a key rotated since then flips R2 to `bad-btcheaders-sig`.
+        //
+        // `pindexPrev` is non-null here by construction: skipMNChecks is true
+        // whenever pindexPrev is null (isGenesisBlock), so this branch implies a
+        // non-null parent. The assert states that rather than leaving it implied —
+        // if the skip conditions are ever refactored, this must fail loudly and not
+        // silently dereference or fall back to a tip.
+        assert(pindexPrev);
+        const CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pindexPrev);
+
+        // R1: Publisher must be a registered MN IN THE PARENT'S LIST.
+        auto dmn = mnList.GetMN(payload.publisherProTxHash);
         if (!dmn) {
             LogPrint(BCLog::MASTERNODE, "TX_BTC_HEADERS unknown MN: %s\n",
                      payload.publisherProTxHash.ToString());
             return state.DoS(100, false, REJECT_INVALID, "bad-btcheaders-unknown-mn");
         }
 
-        // R2: Valid signature (operator key + BTCHDR domain sep)
-        if (!payload.VerifySignature()) {
+        // R2: Valid signature (operator key + BTCHDR domain sep). Verified INLINE
+        // against the dmn just resolved — one lookup, one context. Calling
+        // payload.VerifySignature(mnList) would be equivalent, but re-looking-up the
+        // same proTxHash in the same list is how the two sites drifted apart in the
+        // first place: R1 read one list and R2 read another.
+        if (!dmn->pdmnState->pubKeyOperator.Verify(payload.GetSignatureHash(), payload.sig)) {
             LogPrint(BCLog::MASTERNODE, "TX_BTC_HEADERS invalid signature from %s\n",
                      payload.publisherProTxHash.ToString());
             return state.DoS(100, false, REJECT_INVALID, "bad-btcheaders-sig");
@@ -490,7 +537,12 @@ bool CheckBtcHeadersTx(const CTransaction& tx,
             bool haveGenesisHeader = g_btc_spv->HasGenesisCheckpointHeader();
             bool enforceDifficulty = reorgRuleset && (!skipMNChecks || haveGenesisHeader);
             if (enforceDifficulty) {
-                const bool btcTestnet = Params().IsTestnet();
+                // The old `Params().IsTestnet()` escapes are GONE: the Bitcoin
+                // source of the measurement network is Testnet4, whose
+                // difficulty schedule (incl. BIP-94) is fully verifiable from
+                // headers. Only bootstrapMode may skip (cross-tx seed gaps,
+                // bounded by the per-tx anchor + intra-tx enforcement + SPV
+                // checkpoints).
                 const bool bootstrapMode = skipMNChecks;  // skip (don't reject) cross-tx gaps here
                 uint32_t gcpHeight = 0; uint256 gcpHash; BtcBlockHeader genesisHdr;
                 bool haveGcpHdr = g_btc_spv->GetGenesisCheckpoint(gcpHeight, gcpHash) &&
@@ -503,8 +555,8 @@ bool CheckBtcHeadersTx(const CTransaction& tx,
                             // Genesis anchor: parent is the hardcoded checkpoint header.
                             if (haveGcpHdr && payload.startHeight == gcpHeight + 1) {
                                 parent = genesisHdr;
-                            } else if (bootstrapMode || btcTestnet) {
-                                continue; // cross-tx seed gap / signet mid-chain: rely on checkpoints
+                            } else if (bootstrapMode) {
+                                continue; // cross-tx seed gap: rely on checkpoints
                             } else {
                                 return state.DoS(50, false, REJECT_INVALID, "bad-btcheaders-difficulty-noparent");
                             }
@@ -512,30 +564,42 @@ bool CheckBtcHeadersTx(const CTransaction& tx,
                     } else {
                         parent = payload.headers[i - 1];
                     }
-                    // Retarget period-first (height-2016): look in THIS payload first
-                    // (a large seed isn't in btcheadersdb yet), then btcheadersdb, then
-                    // the genesis checkpoint header.
-                    const BtcBlockHeader* pFirst = nullptr;
-                    BtcBlockHeader firstHdr;
-                    if (hHeight % 2016 == 0) {
-                        uint32_t fHeight = hHeight - 2016;
-                        if (fHeight >= payload.startHeight && (size_t)(fHeight - payload.startHeight) < i) {
-                            pFirst = &payload.headers[fHeight - payload.startHeight];
-                        } else if (g_btcheadersdb->GetHeaderByHeight(fHeight, firstHdr)) {
-                            pFirst = &firstHdr;
-                        } else if (haveGcpHdr && fHeight == gcpHeight) {
-                            firstHdr = genesisHdr; pFirst = &firstHdr;
+                    // Ancestor lookup for the difficulty engine (min-difficulty
+                    // walk-back + retarget period-first): THIS payload first (a
+                    // large seed isn't in btcheadersdb yet), then btcheadersdb
+                    // (shared prefix below startHeight), then the pinned genesis
+                    // checkpoint header.
+                    auto getAncestor = [&payload, i, haveGcpHdr, gcpHeight, &genesisHdr](uint32_t q, BtcBlockHeader& out) {
+                        if (q >= payload.startHeight && (size_t)(q - payload.startHeight) < i) {
+                            out = payload.headers[q - payload.startHeight];
+                            return true;
                         }
-                    }
-                    uint32_t expected = g_btc_spv->ExpectedNextBits(hHeight, parent, pFirst);
+                        if (q < payload.startHeight && g_btcheadersdb->GetHeaderByHeight(q, out)) {
+                            return true;
+                        }
+                        if (haveGcpHdr && q == gcpHeight) {
+                            out = genesisHdr;
+                            return true;
+                        }
+                        return false;
+                    };
+                    uint32_t expected = g_btc_spv->ExpectedNextBits(hHeight, parent,
+                                                                    payload.headers[i].nTime, getAncestor);
                     if (expected == 0) {
-                        if (bootstrapMode || btcTestnet) continue; // cross-tx period-first gap
+                        if (bootstrapMode) continue; // cross-tx ancestor gap
                         return state.DoS(50, false, REJECT_INVALID, "bad-btcheaders-difficulty-unverifiable");
                     }
                     if (payload.headers[i].nBits != expected) {
                         LogPrint(BCLog::MASTERNODE, "TX_BTC_HEADERS bad difficulty at h=%u: got %08x expected %08x\n",
                                  hHeight, payload.headers[i].nBits, expected);
                         return state.DoS(100, false, REJECT_INVALID, "bad-btcheaders-bad-difficulty");
+                    }
+                    // BIP-94 timewarp bound (Testnet4): the first block of a
+                    // difficulty period may not be earlier than its parent
+                    // minus 600 s. Deterministic (no wall clock).
+                    if (!g_btc_spv->CheckTimewarp(hHeight, payload.headers[i], parent)) {
+                        LogPrint(BCLog::MASTERNODE, "TX_BTC_HEADERS timewarp at h=%u\n", hHeight);
+                        return state.DoS(100, false, REJECT_INVALID, "bad-btcheaders-timewarp");
                     }
                     // F3: timestamp must exceed median-time-past (anti-timewarp).
                     // Past-bound only (deterministic); no wall-clock future bound.

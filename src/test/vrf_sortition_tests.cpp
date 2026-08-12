@@ -106,7 +106,10 @@ BOOST_AUTO_TEST_CASE(active_finality_threshold_scales_with_min_E_N)
     BOOST_REQUIRE_GT(E, 12);  // E is the large open-network cap, not a tiny committee
 
     // N <= E: effective committee = N, threshold = ceil(2/3·N) (tracks the network size).
-    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3),  HuVrfFinalityThreshold(3));   // 2 (today's 3-operator fleet)
+    // LOT 4 (AUD-002): N=3 is BELOW the Sybil floor (nHuQuorumSize=4) — the
+    // auto-scaling formula applies only from the floor upwards.
+    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 3), HU_FINALITY_THRESHOLD_UNREACHABLE);
+    BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 4),  HuVrfFinalityThreshold(4));   // at the floor
     BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, 12), HuVrfFinalityThreshold(12));  // 8
     BOOST_CHECK_EQUAL(HuActiveFinalityThreshold(consensus, E),  HuVrfFinalityThreshold(E));
 
@@ -140,6 +143,10 @@ BOOST_FIXTURE_TEST_CASE(operator_vrf_selection_end_to_end, SortitionSetup)
         blocks[i].pprev = i ? &blocks[i - 1] : nullptr;
         blocks[i].phashBlock = &hashes[i];
         blocks[i].BuildSkip();
+        // LOT 9 M3: N is resolved from the block's epoch operator sets, so the
+        // synthetic chain must carry the list exactly as a real node's does.
+        LOCK(cs_main);
+        deterministicMNManager->SetListForTesting(&blocks[i], mnList, /*asTip=*/false);
     }
     const CBlockIndex* pindex = &blocks[20];
 
@@ -196,6 +203,10 @@ BOOST_FIXTURE_TEST_CASE(derived_operator_key_vrf_end_to_end, SortitionSetup)
         blocks[i].pprev = i ? &blocks[i - 1] : nullptr;
         blocks[i].phashBlock = &hashes[i];
         blocks[i].BuildSkip();
+        // LOT 9 M3: N is resolved from the block's epoch operator sets, so the
+        // synthetic chain must carry the list exactly as a real node's does.
+        LOCK(cs_main);
+        deterministicMNManager->SetListForTesting(&blocks[i], mnList, /*asTip=*/false);
     }
     const CBlockIndex* pindex = &blocks[20];
 

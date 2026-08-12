@@ -108,8 +108,15 @@ BITCOIN_TESTS =\
   test/connectblock_uaf_tests.cpp \
   test/dmn_operator_key_tests.cpp \
   test/einv_eligibility_guard_tests.cpp \
+  test/testnet_epoch_magic_tests.cpp \
   test/hu_finality_integration_tests.cpp \
   test/hu_finality_reorg_tests.cpp \
+  test/hu_finality_subfloor_tests.cpp \
+  test/consensus_divergence_audit_tests.cpp \
+  test/consensus_lot6_local_finality_tests.cpp \
+  test/consensus_lot7_local_state_tests.cpp \
+  test/consensus_audit_review_tests.cpp \
+  test/consensus_p0_atomicity_tests.cpp \
   test/byzantine_finality_tests.cpp \
   test/signaling_ratelimit_tests.cpp \
   test/hu_finality_seed_tests.cpp \
@@ -140,6 +147,17 @@ BITCOIN_TESTS =\
   test/mempool_tests.cpp \
   test/merkle_tests.cpp \
   test/multisig_tests.cpp \
+  test/consensus_lot9_dmm_vrf_tests.cpp \
+  test/consensus_lot9_m1_schedule_tests.cpp \
+  test/consensus_lot9_m3_lease_tests.cpp \
+  test/consensus_lot9_m3_lease_e2e_tests.cpp \
+  test/consensus_lot9_lease_stale_mempool_tests.cpp \
+  test/btcspv_signet_authentication_tests.cpp \
+  test/btcspv_testnet4_tests.cpp \
+  test/data/btc_testnet4_headers.h \
+  test/consensus_lot9_m31_activation_tests.cpp \
+  test/consensus_lot9_m4_scale_tests.cpp \
+  test/consensus_lot9_m4bis_bootstrap_tests.cpp \
   test/mn_blockproducer_tests.cpp \
   test/net_tests.cpp \
   test/netbase_tests.cpp \

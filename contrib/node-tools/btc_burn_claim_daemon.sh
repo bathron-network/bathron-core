@@ -4,15 +4,15 @@
 # ==============================================================================
 #
 # This daemon runs alongside btc_header_daemon.sh and:
-#   1. Scans BTC Signet blocks for BATHRON burns
+#   1. Scans Bitcoin Testnet4 blocks for BATHRON burns
 #   2. Checks if they're already claimed on BATHRON
 #   3. Auto-submits TX_BURN_CLAIM for unclaimed burns
 #
 # Flow:
-#   BTC Signet → [scan for BATHRON] → [check BATHRON DB] → submitburnclaim
+#   Bitcoin Testnet4 → [scan for BATHRON] → [check BATHRON DB] → submitburnclaim
 #
 # Requirements:
-#   - bitcoin-cli configured for Signet with txindex=1
+#   - bitcoin-cli configured for Testnet4 (v28+) with txindex=1
 #   - bathron-cli configured for testnet
 #   - Run on the public seed node (set PUBLIC_SEED_HOST at deployment)
 #
@@ -34,14 +34,14 @@ set -euo pipefail
 
 # Configuration
 INTERVAL=300                    # Check every 5 minutes
-K_CONFIRMATIONS=6               # Required BTC confirmations (Signet)
+K_CONFIRMATIONS=6               # Required BTC confirmations (Testnet4)
 PID_FILE="/tmp/btc_burn_claim_daemon.pid"
 LOG_FILE="/tmp/btc_burn_claim_daemon.log"
 STATE_FILE="/tmp/btc_burn_claim_daemon.state"
 
-# Bitcoin CLI (Signet)
-BTC_CLI="${BTC_CLI:-$HOME/bitcoin-27.0/bin/bitcoin-cli}"
-BTC_DATADIR="${BTC_DATADIR:-$HOME/.bitcoin-signet}"
+# Bitcoin CLI (Testnet4 — requires Bitcoin Core v28+)
+BTC_CLI="${BTC_CLI:-$HOME/bitcoin-28.1/bin/bitcoin-cli}"
+BTC_DATADIR="${BTC_DATADIR:-$HOME/.bitcoin-testnet4}"
 BTC_CONF="${BTC_CONF:-$BTC_DATADIR/bitcoin.conf}"
 BTC_CMD="$BTC_CLI -datadir=$BTC_DATADIR"
 
@@ -112,8 +112,8 @@ get_last_scanned() {
         log "Using legacy statefile (will migrate to DB)"
         cat "$STATE_FILE"
     else
-        # Start from SPV min height (Signet checkpoint)
-        echo "286300"  # BTC Signet checkpoint - just before first known burn (286326)
+        # Start from SPV min height (Testnet4 genesis checkpoint)
+        echo "145152"  # Bitcoin Testnet4 genesis checkpoint (retarget boundary 72*2016)
     fi
 }
 
@@ -293,7 +293,7 @@ scan_once() {
     local last_scanned=$(get_last_scanned)
 
     if [[ "$btc_tip" == "-1" ]]; then
-        log_error "Cannot reach BTC Signet node"
+        log_error "Cannot reach Bitcoin Testnet4 node"
         return 1
     fi
 
@@ -422,7 +422,7 @@ cmd_start() {
 
     # Verify dependencies
     if ! $BTC_CMD getblockcount >/dev/null 2>&1; then
-        log_error "Cannot connect to BTC Signet node"
+        log_error "Cannot connect to Bitcoin Testnet4 node"
         log "  Check: $BTC_CMD getblockcount"
         exit 1
     fi
@@ -517,9 +517,9 @@ cmd_status() {
     # Check BTC node
     local btc_tip=$(get_btc_tip)
     if [[ "$btc_tip" == "-1" ]]; then
-        echo -e "BTC Signet:   ${RED}UNREACHABLE${NC}"
+        echo -e "Bitcoin Testnet4:   ${RED}UNREACHABLE${NC}"
     else
-        echo -e "BTC Signet:   ${GREEN}OK${NC} (tip=$btc_tip)"
+        echo -e "Bitcoin Testnet4:   ${GREEN}OK${NC} (tip=$btc_tip)"
     fi
 
     # Check BATHRON node
@@ -691,14 +691,14 @@ F3 RPCs (persistent, reorg-safe):
   getburnscanrange       Get next batch range to scan
 
 Environment:
-  BTC_CLI       Path to bitcoin-cli (default: ~/bitcoin-27.0/bin/bitcoin-cli)
-  BTC_CONF      Bitcoin config file (default: ~/.bitcoin-signet/bitcoin.conf)
+  BTC_CLI       Path to bitcoin-cli (default: ~/bitcoin-28.1/bin/bitcoin-cli)
+  BTC_CONF      Bitcoin config file (default: ~/.bitcoin-testnet4/bitcoin.conf)
   BATHRON_CLI   Path to bathron-cli (default: ~/bathron-cli)
   INTERVAL      Scan interval in seconds (default: 300)
 
 How it works:
   1. Reads progress from F3 DB (fallback: legacy statefile)
-  2. Scans BTC Signet blocks for BATHRON OP_RETURN burns
+  2. Scans Bitcoin Testnet4 blocks for BATHRON OP_RETURN burns
   3. Waits for K=$K_CONFIRMATIONS confirmations
   4. Checks if burn is already claimed (checkburnclaim RPC)
   5. Submits TX_BURN_CLAIM for unclaimed burns (fee-free!)

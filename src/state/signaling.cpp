@@ -82,10 +82,12 @@ bool CHuSignalingManager::OnNewBlock(const CBlockIndex* pindex, CConnman* connma
     // Finality committee = ECVRF sortition (the ONLY path; no legacy top-N). Each
     // managed operator self-selects below via its own VRF proof over the finality seed.
     // VRF inputs shared by all our managed operators this block: the seed hash(H-k)
-    // (the VRF input alpha) and N = unique operators (must match the verifier's N in
-    // IsOperatorVrfSelected, which uses the same mnList = list for pindex->pprev).
+    // (the VRF input alpha) and N = the epoch snapshot's lease-valid operator
+    // population (LOT 9 M3) — it MUST match the verifier's N, which comes from the
+    // context's eligibleOperators, itself built from the same
+    // GetEpochFinalityOperators(pindex->pprev).
     const uint256 vrfSeed = GetHuFinalitySeedHash(pindex, consensus.nHuFinalitySeedOffset);
-    const int vrfN = static_cast<int>(GetUniqueOperators(mnList).size());
+    const int vrfN = static_cast<int>(GetEpochFinalityOperators(pindex->pprev).size());
 
     // Check which of our managed operators are VRF-drawn to sign this block
     std::vector<uint256> managedProTxHashes = activeMasternodeManager->GetManagedProTxHashes();
@@ -315,9 +317,19 @@ bool CHuSignalingManager::ProcessHuSignature(const CHuSignature& sig, CNode* pfr
     // Relay to other peers
     BroadcastSignature(sig, connman, pfrom);
 
-    LogPrint(BCLog::STATE, "Quorum Signaling: Accepted signature %d/%d from %s for block %s\n",
-             sigCount, activeThreshold,
-             sig.proTxHash.ToString().substr(0, 16), sig.blockHash.ToString().substr(0, 16));
+    // LOT 4: below the Sybil floor activeThreshold is the internal sentinel; printing
+    // it would read as "2/2147483647". Report the condition instead.
+    if (activeThreshold == hu::HU_FINALITY_THRESHOLD_UNREACHABLE) {
+        LogPrint(BCLog::STATE, "Quorum Signaling: Accepted signature %d from %s for block %s"
+                               " - finality UNREACHABLE (operator population below the Sybil floor)\n",
+                 sigCount,
+                 sig.proTxHash.ToString().substr(0, 16),
+                 sig.blockHash.ToString().substr(0, 16));
+    } else {
+        LogPrint(BCLog::STATE, "Quorum Signaling: Accepted signature %d/%d from %s for block %s\n",
+                 sigCount, activeThreshold,
+                 sig.proTxHash.ToString().substr(0, 16), sig.blockHash.ToString().substr(0, 16));
+    }
 
     return true;
 }

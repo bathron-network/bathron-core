@@ -25,62 +25,78 @@ bool CheckBlockMNOnly(const CBlock& block,
         return true;
     }
 
-    // Get DMN list at previous block
     if (!deterministicMNManager) {
         return state.DoS(100, false, REJECT_INVALID, "bad-mn-manager-null");
     }
 
-    CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pindexPrev);
     const int nHeight = pindexPrev->nHeight + 1;
 
-    // Bootstrap exemption: Allow unsigned blocks during initial network setup
-    // Blocks 1 to nDMMBootstrapHeight are generated via generatebootstrap before MNs are online
-    // After bootstrap phase, DMM signature verification is strictly enforced
+    // BOOTSTRAP MODE (LOT 9 M3.1): strictly below the schedule activation height the
+    // chain is launcher-operated — blocks 1..nDMMBootstrapHeight are produced by
+    // generatebootstrap before any MN is online, and no producer check applies. From
+    // the activation height on, the anchored epoch schedule governs every block and
+    // signature verification is strictly enforced. The two windows are adjacent by
+    // construction (activation == nDMMBootstrapHeight + 1), so no height can fall
+    // outside both — the gap that made the M3 measurement necessary cannot exist.
     const Consensus::Params& consensus = Params().GetConsensus();
-    if (nHeight <= consensus.nDMMBootstrapHeight) {
-        LogPrint(BCLog::MASTERNODE, "%s: Bootstrap block %d (threshold=%d) - MN signature not required\n",
-                 __func__, nHeight, consensus.nDMMBootstrapHeight);
+    if (nHeight < consensus.DMMScheduleActivationHeight()) {
+        LogPrint(BCLog::MASTERNODE, "%s: Bootstrap block %d (activation=%d) - MN signature not required\n",
+                 __func__, nHeight, consensus.DMMScheduleActivationHeight());
         return true;
     }
 
-    // Gate on the SAME eligible producer set the scheduler produces from
-    // (CalculateBlockProducerScores = bootstrap-trust MNs registered <=
-    // nDMMBootstrapHeight PLUS collateral-confirmed MNs), NOT GetConfirmedMNsCount().
-    // The old confirmed-only gate skipped the wrong-producer check for the entire
-    // post-bootstrap-pre-confirmation window (up to nMasternodeCollateralMinConf
-    // blocks, ~1440 on mainnet) even though those blocks DO have a deterministic
-    // expected producer — the production-side analogue of the GetUniqueOperators
-    // bootstrap-awareness fix. If the eligible set is empty, there is genuinely no
-    // producer to check against, so allow the block.
-    if (mn_consensus::CalculateBlockProducerScores(pindexPrev, mnList).empty()) {
-        LogPrint(BCLog::MASTERNODE, "%s: No eligible producers at height %d (total: %d), allowing block\n",
-                 __func__, nHeight, mnList.GetValidMNsCount());
-        return true;
+    // LOT 9 M1+M2 — the ONLY producer engine: the non-grindable epoch schedule,
+    // resolved from the PARENT alone. The local scheduler, AcceptBlock and this
+    // ConnectBlock-side check all obtain the same leader from the same parent.
+    CDeterministicMNCPtr expectedMn;
+    mn_consensus::DMMScheduleResult schedRes;
+    const mn_consensus::ScheduleStatus status =
+        mn_consensus::ResolveScheduledProducer(pindexPrev, block.nTime, expectedMn, schedRes);
+
+    switch (status) {
+        case mn_consensus::ScheduleStatus::OK:
+            // A leader exists; a failure from here on IS a genuine block invalidity.
+            return mn_consensus::VerifyScheduledProducerSignature(block, expectedMn, state);
+
+        case mn_consensus::ScheduleStatus::NO_SIGNER:
+            // The authoritative snapshot holds no eligible identity: a deterministic
+            // consensus stall, identical on every node. A block CLAIMING a producer
+            // (it carries a signature) contradicts the schedule — DETERMINISTIC
+            // INVALIDITY (M3 PHASE 0). The earlier state.Error variant was REFUTED by
+            // an executable reproducer (dmm_no_signer_e2e): the non-invalid failure
+            // left the block a candidate, ActivateBestChainStep re-elected it forever
+            // (earlier nSequenceId wins the work tie) and the node could never
+            // activate an honest sibling — a self-inflicted wedge. NO_SIGNER is a
+            // pure CHAIN fact (the empty snapshot is connected, authoritative data),
+            // so BLOCK_FAILED_VALID is permitted in this SOLE objective case;
+            // DEFERRED and LOCAL_STATE_MISSING_FATAL below remain strictly
+            // non-invalidating. An unsigned block claims no producer, and with no
+            // eligible identity there is nothing to check it against — the
+            // pre-LOT-9 empty-set allowance, scoped to the authoritative case.
+            if (!block.vchBlockSig.empty()) {
+                LogPrintf("%s: height %d claims a producer (sig present) but the epoch "
+                          "snapshot holds NO eligible identity — invalid (bad-dmm-no-eligible-producer)\n",
+                          __func__, nHeight);
+                return state.DoS(100, false, REJECT_INVALID, "bad-dmm-no-eligible-producer", false,
+                                 "block claims a producer but the authoritative epoch snapshot has no eligible identity");
+            }
+            LogPrint(BCLog::MASTERNODE, "%s: No eligible identity in the epoch snapshot at height %d, unsigned block allowed\n",
+                     __func__, nHeight);
+            return true;
+
+        case mn_consensus::ScheduleStatus::DEFERRED:
+            // Our node has not connected the branch carrying the snapshot: the block
+            // is not yet validable HERE. Non-persisted Error — no invalidity, no DoS,
+            // no ban, no fallback onto another list. Re-evaluated if the branch joins
+            // the active chain.
+            return state.Error("dmm-schedule-deferred");
+
+        case mn_consensus::ScheduleStatus::LOCAL_STATE_MISSING_FATAL:
+            // OUR reconstructible state is corrupt. Shared LOT 1 latch + controlled
+            // shutdown + REINDEX_REQUIRED; the block is never blamed.
+            return mn_consensus::HandleFatalScheduleResolution(nHeight, pindexPrev->GetBlockHash(), &state);
     }
 
-    // Verify block producer signature
-    return mn_consensus::VerifyBlockProducerSignature(block, pindexPrev, mnList, state);
-}
-
-bool GetExpectedBlockProducer(const CBlockIndex* pindexPrev, uint256& proTxHashRet)
-{
-    proTxHashRet.SetNull();
-
-    if (!pindexPrev || !deterministicMNManager) {
-        return false;
-    }
-
-    CDeterministicMNList mnList = deterministicMNManager->GetListForBlock(pindexPrev);
-
-    if (mnList.GetValidMNsCount() == 0) {
-        return false;
-    }
-
-    CDeterministicMNCPtr producer;
-    if (!mn_consensus::GetBlockProducer(pindexPrev, mnList, producer)) {
-        return false;
-    }
-
-    proTxHashRet = producer->proTxHash;
-    return true;
+    // Unreachable: the switch above covers every ScheduleStatus.
+    return state.Error("dmm-schedule-unknown-status");
 }

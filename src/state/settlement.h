@@ -246,24 +246,11 @@ struct SettlementState
         return true;
     }
 
-    /**
-     * CheckA5 - Verify A5 monetary conservation against previous state
-     *
-     * A5: M0_total_supply(N) = M0_total_supply(N-1) + BurnClaims
-     *
-     * This prevents ANY inflation attack, even if 90% of MNs are compromised.
-     * M0 can ONLY be created through BTC burns (TX_MINT_M0BTC).
-     * Block reward = 0 (M0 supply from BTC burns only).
-     *
-     * @param prevState Previous block's settlement state
-     * @return true if A5 holds, false if monetary conservation violated
-     */
-    bool CheckA5(const SettlementState& prevState) const
-    {
-        // Formula: M0_supply(N) = M0_supply(N-1) + BurnClaims
-        CAmount expected = prevState.M0_total_supply + burnclaims_block;
-        return M0_total_supply == expected;
-    }
+    // LOT 8: the inline CheckA5(prevState) is REMOVED. Both of its terms were written
+    // from the same local sum at connect time, so it compared X to X (tautology) and its
+    // name promised an anti-inflation guarantee it did not provide. The real check is
+    // CheckA5Independent (settlement_logic.h): mint outputs vs the burn ledger's
+    // burnedSats — two independent write paths.
 
     /**
      * GetA5Delta - Get the expected supply delta for this block

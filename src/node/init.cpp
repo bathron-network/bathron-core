@@ -29,11 +29,13 @@
 #include "state/settlementdb.h"
 #include "htlc/htlcdb.h"               // BP02: HTLC database for M1 atomic swaps
 #include "btcspv/btcspv.h"             // BP09: BTC SPV client (validation only)
+#include "burnclaim/burnclaim.h"       // BP11: DEFAULT_ENABLE_MINT (producer policy)
 #include "burnclaim/burnclaimdb.h"     // BP11: Burn claim database
 #include "burnclaim/killswitch.h"      // BP12: Kill switch for BTC burns
 #include "btcheaders/btcheadersdb.h"   // BP-SPVMNPUB: On-chain BTC headers database
 #include "btcheaders/btcstate_provider.h" // A1: OP_BTCSTATEVERIFY evaluator
 #include "btcheaders/btcheaders_publisher.h"  // BP-SPVMNPUB: Auto-publisher
+#include "masternode/lease_renewer.h"         // LOT 9 M3: operator lease monitor
 #include "version.h"                   // TESTNET_EPOCH for genesis reset auto-wipe
 #include "masternode/evodb.h"           // Evo DB for masternode list consistency
 #include "mapport.h"
@@ -266,6 +268,9 @@ void Shutdown()
     // BP-SPVMNPUB: Shutdown BTC headers auto-publisher
     ShutdownBtcHeadersPublisher();
 
+    // LOT 9 M3: Shutdown operator lease monitor
+    ShutdownOperatorLeaseMonitor();
+
     // BP09: Shutdown BTC SPV client
     if (g_btc_spv) {
         g_btc_spv->Shutdown();
@@ -382,14 +387,18 @@ static void registerSignalHandler(int signal, void(*handler)(int))
 }
 #endif
 
+// Boost >= 1.83 removed signals2 disconnection by function reference, so keep
+// the connection handle instead of disconnecting by target.
+static boost::signals2::connection g_rpc_block_change_connection;
+
 void OnRPCStarted()
 {
-    uiInterface.NotifyBlockTip.connect(RPCNotifyBlockChange);
+    g_rpc_block_change_connection = uiInterface.NotifyBlockTip.connect(RPCNotifyBlockChange);
 }
 
 void OnRPCStopped()
 {
-    uiInterface.NotifyBlockTip.disconnect(RPCNotifyBlockChange);
+    g_rpc_block_change_connection.disconnect();
     // TODO: remove unused parameter fInitialDownload
     RPCNotifyBlockChange(false, nullptr);
     LogPrint(BCLog::RPC, "RPC stopped.\n");
@@ -517,6 +526,12 @@ std::string HelpMessage(HelpMessageMode mode)
         strUsage += HelpMessageOpt("-limitdescendantsize=<n>", strprintf("Do not accept transactions if any ancestor would have more than <n> kilobytes of in-mempool descendants (default: %u).", DEFAULT_DESCENDANT_SIZE_LIMIT));
         // BATHRON: -sporkkey removed - spork system eliminated
         strUsage += HelpMessageOpt("-nuparams=upgradeName:activationHeight", "Use given activation height for specified network upgrade (regtest only)");
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+        strUsage += HelpMessageOpt("-labquorumsize=<n>", "LAB-ONLY (regtest): finality Sybil floor nHuQuorumSize");
+        strUsage += HelpMessageOpt("-labcommitteesize=<n>", "LAB-ONLY (regtest): committee cap nHuExpectedCommitteeSize");
+        strUsage += HelpMessageOpt("-labbootstrapheight=<n>", "LAB-ONLY (regtest): bootstrap window AND schedule anchor (activation = n+1)");
+        strUsage += HelpMessageOpt("-lableaseblocks=<n>", "LAB-ONLY (regtest): operator lease horizon nOperatorLeaseBlocks");
+#endif
     }
     strUsage += HelpMessageOpt("-debug=<category>", strprintf("Output debugging information (default: %u, supplying <category> is optional)", 0) + ". " +
         "If <category> is not supplied, output all debugging information. <category> can be: " + ListLogCategories() + ".");
@@ -558,6 +573,19 @@ std::string HelpMessage(HelpMessageMode mode)
 
     strUsage += HelpMessageGroup("Block creation options:");
     strUsage += HelpMessageOpt("-blockmaxsize=<n>", strprintf("Set maximum block size in bytes (default: %d)", DEFAULT_BLOCK_MAX_SIZE));
+    // LOT 2 (AUD-003) / integration gate: -enablemint is a PRODUCER-SIDE policy ONLY.
+    // It was previously undeclared, so operators could set it without it appearing in
+    // any help output — and its historical form ALSO short-circuited validation, which
+    // let a node-local flag decide block validity. That bypass was removed in LOT 2:
+    // the validation oracle (CreateExpectedMintM0BTC) never reads it, so two nodes with
+    // opposite settings accept and reject exactly the same blocks. Declaring it here
+    // makes the remaining (production-only) effect discoverable and auditable.
+    strUsage += HelpMessageOpt("-enablemint",
+        strprintf("Allow THIS node to assemble the due TX_MINT_M0BTC when producing a block "
+                  "(default: %u). PRODUCER POLICY ONLY — it never affects the validity of "
+                  "blocks received from peers. With -enablemint=0 this node refuses to "
+                  "assemble a block at a height where a mint is due, rather than producing "
+                  "one every node would reject.", DEFAULT_ENABLE_MINT));
     if (showDebug)
         strUsage += HelpMessageOpt("-blockversion=<n>", "Override block version to test forking scenarios");
 
@@ -1151,6 +1179,30 @@ bool AppInitParameterInteraction()
     if (!InitNUParams())
         return false;
 
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+    // LOT 9 M4 — LAB-ONLY, REGTEST-ONLY: run a local laboratory at the REAL public
+    // finality floor / committee cap / schedule anchor instead of regtest's
+    // degenerate ones. Compiled out of release builds entirely; refused outside
+    // regtest, exactly like -nuparams.
+    if (gArgs.IsArgSet("-labquorumsize") || gArgs.IsArgSet("-labcommitteesize") ||
+        gArgs.IsArgSet("-labbootstrapheight") || gArgs.IsArgSet("-lableaseblocks")) {
+        if (!Params().IsRegTestNet()) {
+            return UIError(_("Laboratory DMM parameters may only be overridden on regtest."));
+        }
+        const Consensus::Params& c = Params().GetConsensus();
+        const int q = (int)gArgs.GetArg("-labquorumsize", c.nHuQuorumSize);
+        const int e = (int)gArgs.GetArg("-labcommitteesize", c.nHuExpectedCommitteeSize);
+        const int b = (int)gArgs.GetArg("-labbootstrapheight", c.nDMMBootstrapHeight);
+        const int l = (int)gArgs.GetArg("-lableaseblocks", c.nOperatorLeaseBlocks);
+        if (q < 1 || e < 1 || b < 1 || l < 1) {
+            return UIError(_("Laboratory DMM parameters must be >= 1."));
+        }
+        UpdateLabDMMParams(q, e, b, l);
+        LogPrintf("LAB: DMM params overridden — quorum=%d committee=%d bootstrap=%d (activation=%d) lease=%d\n",
+                  q, e, b, b + 1, l);
+    }
+#endif
+
     return true;
 }
 
@@ -1446,10 +1498,13 @@ bool AppInitMain()
     bool fReindexChainState = gArgs.GetBoolArg("-reindex-chainstate", false);
     bool fRebuildSettlement = gArgs.GetBoolArg("-rebuildsettlement", false);
 
-    // -rebuildsettlement: Rebuild settlement state from chain without full reindex
+    // -rebuildsettlement: DISABLED (LOT 1 round 12). Kept only so the flag is
+    // recognised and refused with an explanatory error instead of being silently
+    // ignored. See the refusal below; recovery is -reindex.
     // This is faster than -reindex and only reconstructs settlement/ DB
     if (fRebuildSettlement) {
-        LogPrintf("BATHRON: -rebuildsettlement requested, will rebuild settlement state from chain\n");
+        LogPrintf("BATHRON: -rebuildsettlement requested — this flag is DISABLED and the "
+                  "node will refuse to start; use -reindex for full recovery\n");
     }
 
     // cache size calculations
@@ -1546,13 +1601,19 @@ bool AppInitMain()
                     return false;
                 }
 
-                // BP09: Initialize BTC SPV client
+                // BP09: Initialize BTC SPV client on the CONSENSUS-COMMITTED
+                // Bitcoin source network (chainparams, not a runtime flag).
                 g_btc_spv = std::make_unique<CBtcSPV>();
                 std::string btcspvdir = GetDataDir().string();
-                bool btcTestnet = Params().IsTestnet();
-                if (!g_btc_spv->Init(btcspvdir, btcTestnet)) {
-                    LogPrintf("Warning: Failed to initialize BTC SPV client\n");
-                    // Non-fatal - continue without SPV for now
+                const BtcSourceNet btcSource = Params().GetConsensus().btcSourceNet;
+                if (!g_btc_spv->Init(btcspvdir, btcSource)) {
+                    // FATAL (L-6, PHASE 2.6 review): TX_BTC_HEADERS validation is
+                    // consensus — a node without a working SPV client would skip
+                    // R5/R6 ("no btcspv" path) and could follow an invalid chain.
+                    // Failure here also covers the pin/context self-checks and the
+                    // source-net tag mismatch (stale store from another network).
+                    g_btc_spv.reset();
+                    return UIError(_("Failed to initialize BTC SPV client (wrong or corrupt btcspv store?)"));
                 }
 
                 // BP11: Initialize burn claim database
@@ -1721,7 +1782,8 @@ bool AppInitMain()
                     assert(chainActive.Tip() != nullptr);
 
                     // BP30 v2.2: Check settlement DB consistency with chain tip
-                    // Rebuild-From-Truth: Auto-rebuild if missing/inconsistent or -rebuildsettlement flag
+                    // Rebuild-From-Truth: both the auto-repair and -rebuildsettlement are
+                    // now refused (LOT 1 round 12); recovery is a full -reindex.
                     bool fSettlementRequiresRebuild = false;
 
                     if (fSettlementWasMissing) {
@@ -1735,15 +1797,48 @@ bool AppInitMain()
                         }
                     }
 
-                    // Trigger rebuild if needed OR explicitly requested
-                    if (fSettlementRequiresRebuild || fRebuildSettlement) {
-                        LogPrintf("Settlement: Starting rebuild from chain...\n");
-                        if (!RebuildSettlementFromChain()) {
-                            strLoadError = _("Failed to rebuild settlement database from chain. "
-                                            "Try -reindex for full chain rebuild.");
-                            break;
-                        }
-                        LogPrintf("Settlement: Rebuild complete\n");
+                    // LOT 1 round 7 — the settlement-only auto-repair is NEUTRALISED.
+                    //
+                    // RebuildSettlementFromChain() wipes ONLY settlementdb and then
+                    // replays with fSettlementOnly=true, which still re-runs the
+                    // burnclaim and btcheaders sections (AUD-018). Running it on a
+                    // consistency mismatch therefore repaired one DB, left the others
+                    // holding state from a non-canonical block, and then reported a
+                    // clean startup — i.e. it made a PARTIAL repair look like a
+                    // complete one. That is precisely the failure class this lot exists
+                    // to remove, so it must not run implicitly any more.
+                    //
+                    // A divergence is now FAIL-CLOSED. Recovery is a full -reindex,
+                    // which wipes every derivable consensus DB together (fWipeDBs above:
+                    // settlement + htlc + burnclaim + btcheaders) and replays from
+                    // genesis, plus finalitydb which is wiped and NOT rebuilt (it is
+                    // gossip-fed, not chain-derivable). evo/DMN is rebuilt by the
+                    // standard mechanism; btcspv is a node-local store and is never
+                    // auto-deleted.
+                    if (fSettlementRequiresRebuild) {
+                        strLoadError = _("Consensus database inconsistent with the chain. "
+                                         "A partial repair is not safe: restart with -reindex "
+                                         "to wipe and rebuild every derivable consensus "
+                                         "database together.");
+                        break;
+                    }
+                    // ROUND 12 — -rebuildsettlement is DISABLED in this lot.
+                    //
+                    // It cannot meet the bar for a partial repair: it WIPES settlementdb
+                    // before replaying, so a failure leaves a database it has already
+                    // destroyed ("its failure modifies no DB" is unsatisfiable). And it
+                    // replays with fSettlementOnly=true against a NON-wiped burnclaimdb
+                    // whose claims are already FINAL, so CreateMintM0BTC returns null and
+                    // the replay dies at the first mint block (AUD-018). A partial repair
+                    // that destroys state and then fails is strictly worse than refusing.
+                    if (fRebuildSettlement) {
+                        strLoadError = _("-rebuildsettlement is disabled: it rebuilds only "
+                                         "settlementdb and is unsupported on chains containing "
+                                         "mint or other custom state, leaving burnclaim, HTLC "
+                                         "and BTC-headers data from a possibly non-canonical "
+                                         "block. Use -reindex, which wipes and rebuilds every "
+                                         "derivable consensus database together.");
+                        break;
                     }
 
                     // GO-GENESIS FIX: Check ALL consensus state DBs for consistency
@@ -1771,6 +1866,23 @@ bool AppInitMain()
                         }
                     }
 
+                    // 3) HTLC DB - HTLC records must match chain tip (LOT 1 round 4).
+                    // This slot was empty: htlcdb was the one ConnectBlock-mutable
+                    // consensus DB with no marker and no check, so a crash after its
+                    // batch committed left orphaned records that every other detector
+                    // reported as healthy.
+                    if (g_htlcdb) {
+                        bool fHtlcRequiresRebuild = false;
+                        if (!CheckHtlcDBConsistency(chainTipHash, fHtlcRequiresRebuild)) {
+                            if (fHtlcRequiresRebuild) {
+                                strLoadError = strprintf(_("HTLC database is inconsistent with blockchain tip (%s). "
+                                                           "Please restart with -reindex to rebuild."),
+                                                         chainTipHash.ToString().substr(0, 16));
+                                break;
+                            }
+                        }
+                    }
+
                     // 4) BtcHeaders DB - On-chain BTC headers must match chain tip (BP-SPVMNPUB)
                     if (g_btcheadersdb) {
                         bool fBtcHeadersRequiresRebuild = false;
@@ -1778,6 +1890,24 @@ bool AppInitMain()
                             if (fBtcHeadersRequiresRebuild) {
                                 strLoadError = strprintf(_("BTC headers database is inconsistent with blockchain tip (%s). "
                                                            "Please restart with -reindex to rebuild."),
+                                                         chainTipHash.ToString().substr(0, 16));
+                                break;
+                            }
+                        }
+                    }
+
+                    // 5) A5 independent supply cross-check (LOT 8): with both markers
+                    // AT the tip, the settlement M0 total and the burn-ledger total
+                    // must agree. Same-marker-but-different-totals is a corruption
+                    // class the per-marker checks above cannot see; it is FAIL-CLOSED
+                    // to a full -reindex like every other divergence.
+                    {
+                        bool fA5RequiresRebuild = false;
+                        if (!CheckA5SupplyConsistency(chainTipHash, fA5RequiresRebuild)) {
+                            if (fA5RequiresRebuild) {
+                                strLoadError = strprintf(_("Monetary totals diverge (settlement vs burn ledger) "
+                                                           "at blockchain tip (%s). Please restart with -reindex "
+                                                           "to rebuild."),
                                                          chainTipHash.ToString().substr(0, 16));
                                 break;
                             }
@@ -1871,8 +2001,9 @@ bool AppInitMain()
 
     // Either install a handler to notify us when genesis activates, or set fHaveGenesis directly.
     // No locking, as this happens before any background thread is started.
+    boost::signals2::connection genesisWaitConnection;
     if (chainActive.Tip() == nullptr) {
-        uiInterface.NotifyBlockTip.connect(BlockNotifyGenesisWait);
+        genesisWaitConnection = uiInterface.NotifyBlockTip.connect(BlockNotifyGenesisWait);
     } else {
         fHaveGenesis = true;
     }
@@ -1881,8 +2012,26 @@ bool AppInitMain()
         uiInterface.NotifyBlockTip.connect(BlockNotifyCallback);
 
 
-    // Initialize HU Finality and Signaling systems
-    hu::InitHuFinality();
+    // Initialize HU Finality and Signaling systems.
+    //
+    // LOT 1 round 5 — finalitydb is NOT chain-derivable. Its only non-test writer is
+    // CFinalityManagerHandler::AddSignature (state/finality.cpp:474), fed by GOSSIPED
+    // HU signatures; blocks carry only the DMM producer signature (vchBlockSig), never
+    // finality certificates. So a reindex cannot rebuild it, and silently RESTORING it
+    // after a reindex means honouring finality records that can no longer be revalidated
+    // against anything — a weak-subjectivity assumption taken without saying so.
+    //
+    // On -reindex we therefore WIPE it and let finality be re-established from live
+    // gossip. The cost is explicit and bounded: after a reindex the node has no finality
+    // view until operators sign again. The alternative — trusting un-revalidatable local
+    // records — is strictly worse.
+    const bool fWipeFinality = fReindex;
+    if (fWipeFinality) {
+        LogPrintf("Quorum Finality: -reindex requested — wiping finalitydb. It is NOT "
+                  "chain-derivable and is NOT rebuilt by the replay: this node will have "
+                  "NO finality view until operators sign again (weak subjectivity).\n");
+    }
+    hu::InitHuFinality((1 << 20), fWipeFinality);
     hu::InitHuSignaling();
 
     std::vector<fs::path> vImportFiles;
@@ -1901,7 +2050,7 @@ bool AppInitMain()
         while (!fHaveGenesis && !ShutdownRequested()) {
             condvar_GenesisWait.wait_for(lockG, std::chrono::milliseconds(500));
         }
-        uiInterface.NotifyBlockTip.disconnect(BlockNotifyGenesisWait);
+        genesisWaitConnection.disconnect();
     }
 
     if (ShutdownRequested()) {
@@ -2046,6 +2195,12 @@ bool AppInitMain()
 
     // BP-SPVMNPUB: Initialize BTC headers auto-publisher
     InitBtcHeadersPublisher(scheduler);
+
+    // LOT 9 M3: watch our identities' operator leases (and renew them if
+    // leaseautorenew=1). An expired lease silently removes this node from the
+    // production AND finality sets, so the monitor runs even when auto-renewal
+    // is off — it is the only thing that makes the expiry visible in time.
+    InitOperatorLeaseMonitor(scheduler);
 
     // ********************************************************* Step 12: finished
 

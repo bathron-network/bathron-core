@@ -38,7 +38,11 @@ std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const std::string& chain
     if (chain == CBaseChainParams::MAIN)
         return std::make_unique<CBaseChainParams>("", 27172);
     else if (chain == CBaseChainParams::TESTNET)
-        return std::make_unique<CBaseChainParams>("testnet5", 27175);
+        // RESET 2026-08-04: the data directory is bumped with the chain. The old
+        // testnet lived in "testnet5"; a node built for the new genesis must not
+        // be able to open — or half-open — that directory, even if a wipe was
+        // incomplete. Physical separation, not just a genesis assert.
+        return std::make_unique<CBaseChainParams>("testnet6", 27175);
     else if (chain == CBaseChainParams::REGTEST)
         return std::make_unique<CBaseChainParams>("regtest", 27174);
     else

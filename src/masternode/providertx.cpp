@@ -5,6 +5,7 @@
 
 #include "masternode/providertx.h"
 
+#include "hash.h"
 #include "key_io.h"
 #include "utilstrencodings.h"
 
@@ -210,6 +211,50 @@ bool ProUpRevPL::IsTriviallyValid(CValidationState& state) const
     // pl.nReason is unsigned and ProUpRevPL::REASON_NOT_SPECIFIED == 0
     if (nReason > ProUpRevPL::REASON_LAST) {
         return state.DoS(100, false, REJECT_INVALID, "bad-protx-reason");
+    }
+    return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LOT 9 M3 — OperatorLeasePL
+// ═════════════════════════════════════════════════════════════════════════════
+
+uint256 OperatorLeasePL::GetSignatureHash(const uint256& chainId) const
+{
+    // Domain separation + chain binding + the two payload facts. The expiry is
+    // DELIBERATELY absent: consensus derives it from the inclusion height, the
+    // operator never chooses (spec O-3).
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("BATHRON_OPERATOR_LEASE_V1");
+    ss << chainId;
+    ss << nVersion;
+    ss << proTxHash;
+    ss << nLeaseSequence;
+    return ss.GetHash();
+}
+
+std::string OperatorLeasePL::ToString() const
+{
+    return strprintf("OperatorLeasePL(nVersion=%d, proTxHash=%s, nLeaseSequence=%u)",
+                     nVersion, proTxHash.ToString(), nLeaseSequence);
+}
+
+void OperatorLeasePL::ToJson(UniValue& obj) const
+{
+    obj.clear();
+    obj.setObject();
+    obj.pushKV("version", nVersion);
+    obj.pushKV("proTxHash", proTxHash.ToString());
+    obj.pushKV("leaseSequence", (int64_t)nLeaseSequence);
+}
+
+bool OperatorLeasePL::IsTriviallyValid(CValidationState& state) const
+{
+    if (nVersion == 0 || nVersion > OperatorLeasePL::CURRENT_VERSION) {
+        return state.DoS(100, false, REJECT_INVALID, "bad-lease-version");
+    }
+    if (proTxHash.IsNull()) {
+        return state.DoS(100, false, REJECT_INVALID, "bad-lease-protx-null");
     }
     return true;
 }

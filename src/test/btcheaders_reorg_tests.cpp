@@ -579,12 +579,16 @@ CBlock MakeBlockWithHeaderTxs(int nHeaderTxs, bool published)
 // ===========================================================================
 BOOST_AUTO_TEST_SUITE(btcspv_genesis_header_tests)
 
-BOOST_AUTO_TEST_CASE(signet_genesis_header_hashes_to_checkpoint)
+BOOST_AUTO_TEST_CASE(testnet4_genesis_header_hashes_to_checkpoint)
 {
     BtcBlockHeader h;
-    BOOST_REQUIRE(GetBtcSignetGenesisHeader(h));
+    BOOST_REQUIRE(GetBtcTestnet4GenesisHeader(h));
     BOOST_CHECK_EQUAL(h.GetHash().GetHex(),
-        "0000000732c0c78558a50be0774d99188f65ee374e10ff9816deaf42df9f7780");
+        "00000000000000014694285ac2a2980339778e6b73d2199a65a5f62f2df44d2d");
+    // 145152 is a retarget boundary (72*2016) — load-bearing for the BIP-94
+    // engine: the min-difficulty walk-back and the period-first lookup can
+    // never need an ancestor below the pin.
+    BOOST_CHECK_EQUAL(145152 % 2016, 0);
 }
 
 BOOST_AUTO_TEST_CASE(mainnet_genesis_header_hashes_to_checkpoint)
@@ -797,10 +801,18 @@ BOOST_AUTO_TEST_CASE(burnclaim_db_mismatch_requires_rebuild)
     const uint256 tip   = ArithToUint256(arith_uint256(0xC0FFEE));
     const uint256 other = ArithToUint256(arith_uint256(0xBADBAD));
 
-    // Empty DB: consistent, no rebuild.
+    // LOT 8 F2: an EMPTY ledger is only benign on a FRESH chain. At genesis it is
+    // legitimately absent (the marker is written by a block's own commit), so PASS...
     bool rebuild = true;
-    BOOST_CHECK(CheckBurnClaimDBConsistency(tip, rebuild));
+    BOOST_CHECK(CheckBurnClaimDBConsistency(Params().GetConsensus().hashGenesisBlock, rebuild));
     BOOST_CHECK(!rebuild);
+
+    // ...but ABOVE genesis an absent marker means the ledger was wiped or lost while the
+    // chain advanced — the state that let a stale ledger answer `mint-unknown-claim` and
+    // BAN an honest peer. It must now demand a full -reindex.
+    rebuild = false;
+    BOOST_CHECK(!CheckBurnClaimDBConsistency(tip, rebuild));
+    BOOST_CHECK_MESSAGE(rebuild, "absent marker above genesis must require a rebuild");
 
     // DB best block == chain tip: consistent.
     g_burnclaimdb->WriteBestBlock(tip);
@@ -832,32 +844,32 @@ BOOST_FIXTURE_TEST_SUITE(a9_canonical_chain_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(matching_hash_at_checkpoint_passes)
 {
-    const auto& cps = GetA7SignetCheckpoints();
+    const auto& cps = GetA7Testnet4Checkpoints();
     BOOST_REQUIRE(!cps.empty());
     // The exact hardcoded hash at the exact checkpoint height is accepted.
-    BOOST_CHECK(VerifyCanonicalChain(cps[0].height, cps[0].expectedHash, /*testnet=*/true));
+    BOOST_CHECK(VerifyCanonicalChain(cps[0].height, cps[0].expectedHash, BtcSourceNet::BITCOIN_TESTNET4));
 }
 
 BOOST_AUTO_TEST_CASE(wrong_hash_at_checkpoint_rejected)
 {
-    const auto& cps = GetA7SignetCheckpoints();
+    const auto& cps = GetA7Testnet4Checkpoints();
     BOOST_REQUIRE(!cps.empty());
     // A DIFFERENT chain (fork) at the checkpoint height is rejected — this is the
     // "only THE Bitcoin chain" guarantee that A9 encodes.
     const uint256 forged = ArithToUint256(arith_uint256(0xDEADBEEF));
     BOOST_CHECK(forged != cps[0].expectedHash);
-    BOOST_CHECK(!VerifyCanonicalChain(cps[0].height, forged, /*testnet=*/true));
+    BOOST_CHECK(!VerifyCanonicalChain(cps[0].height, forged, BtcSourceNet::BITCOIN_TESTNET4));
 }
 
 BOOST_AUTO_TEST_CASE(non_checkpoint_height_is_unconstrained)
 {
-    const auto& cps = GetA7SignetCheckpoints();
+    const auto& cps = GetA7Testnet4Checkpoints();
     BOOST_REQUIRE(!cps.empty());
     // Off a checkpoint height, ANY hash passes (checkpoints bind only at their
     // exact heights, never retroactively — matches the header comment).
     const uint256 any = ArithToUint256(arith_uint256(0x1234));
-    BOOST_CHECK(VerifyCanonicalChain(cps[0].height + 1, any, /*testnet=*/true));
-    BOOST_CHECK(VerifyCanonicalChain(cps[0].height - 1, any, /*testnet=*/true));
+    BOOST_CHECK(VerifyCanonicalChain(cps[0].height + 1, any, BtcSourceNet::BITCOIN_TESTNET4));
+    BOOST_CHECK(VerifyCanonicalChain(cps[0].height - 1, any, BtcSourceNet::BITCOIN_TESTNET4));
 }
 
 BOOST_AUTO_TEST_CASE(mainnet_halving_anchors_bind)
@@ -868,8 +880,8 @@ BOOST_AUTO_TEST_CASE(mainnet_halving_anchors_bind)
     // correct hash passes, a forged one at the same height is rejected.
     const uint256 forged = ArithToUint256(arith_uint256(0xB16B00B5));
     for (const auto& cp : cps) {
-        BOOST_CHECK(VerifyCanonicalChain(cp.height, cp.expectedHash, /*testnet=*/false));
-        BOOST_CHECK(!VerifyCanonicalChain(cp.height, forged, /*testnet=*/false));
+        BOOST_CHECK(VerifyCanonicalChain(cp.height, cp.expectedHash, BtcSourceNet::BITCOIN_MAINNET));
+        BOOST_CHECK(!VerifyCanonicalChain(cp.height, forged, BtcSourceNet::BITCOIN_MAINNET));
     }
 }
 

@@ -50,13 +50,15 @@ BOOST_AUTO_TEST_CASE(test_combiner_all)
 {
     boost::signals2::signal<bool(), CombinerAll> Test;
     BOOST_CHECK(Test());
-    Test.connect(&ReturnFalse);
+    // Boost >= 1.83 removed signals2 disconnection by function reference:
+    // keep the connection handles instead.
+    boost::signals2::connection connFalse = Test.connect(&ReturnFalse);
     BOOST_CHECK(!Test());
-    Test.connect(&ReturnTrue);
+    boost::signals2::connection connTrue = Test.connect(&ReturnTrue);
     BOOST_CHECK(!Test());
-    Test.disconnect(&ReturnFalse);
+    connFalse.disconnect();
     BOOST_CHECK(Test());
-    Test.disconnect(&ReturnTrue);
+    connTrue.disconnect();
     BOOST_CHECK(Test());
 }
 

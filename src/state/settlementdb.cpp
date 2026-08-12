@@ -4,6 +4,8 @@
 
 #include "state/settlementdb.h"
 
+#include "burnclaim/burnclaimdb.h"
+
 #include "chain.h"
 #include "chainparams.h"
 #include "clientversion.h"
@@ -551,9 +553,25 @@ bool CheckSettlementDBConsistency(const uint256& chainTipHash, int chainTipHeigh
     // Read the best block from settlement DB
     uint256 dbBestBlock;
     if (!g_settlementdb->ReadBestBlock(dbBestBlock)) {
-        // No best block recorded - this is normal for fresh DB or pre-v2.2 DB
-        LogPrintf("Settlement: No best block in DB, will be set on next block connect\n");
-        return true;
+        // INTEGRATION GATE (asymmetry found by the LOT 8 targeted review, INFO-3): an
+        // ABSENT marker was accepted at ANY height here, unlike its burn-ledger twin
+        // (CheckBurnClaimDBConsistency, LOT 8 F2) and unlike the A5 RPC coherence rule.
+        // A wiped settlementdb above genesis therefore PASSED this startup gate while the
+        // other two called the same state incoherent. The marker is written by every
+        // block's own commit, so:
+        //   tip == genesis -> nothing has committed yet: legitimately absent, PASS;
+        //   tip >  genesis -> the DB was wiped or lost while the chain advanced. Recovery
+        //                     is a full -reindex (LOT 1: no partial repair).
+        if (chainTipHash == Params().GetConsensus().hashGenesisBlock) {
+            LogPrintf("Settlement: no best block in DB at genesis (fresh chain) — OK, "
+                      "will be set on the next block connect\n");
+            return true;
+        }
+        LogPrintf("Settlement: DB has NO best-block marker while the chain is at %s (above "
+                  "genesis) — the settlement DB was wiped or lost; rebuild required\n",
+                  chainTipHash.ToString());
+        fRequireRebuild = true;
+        return false;
     }
 
     // If DB best block matches chain tip, we're consistent
@@ -591,9 +609,45 @@ bool CheckSettlementDBConsistency(const uint256& chainTipHash, int chainTipHeigh
     fRequireRebuild = true;
 
     LogPrintf("Settlement: DB inconsistent with chain - requires rebuild\n");
-    LogPrintf("Settlement: Run with -reindex or -rebuildsettlement to rebuild\n");
+    LogPrintf("Settlement: Run with -reindex to rebuild (note: -rebuildsettlement is "
+              "DISABLED — it rebuilds only settlementdb and cannot repair burnclaim, "
+              "HTLC or BTC-headers state)\n");
 
     return false;  // Inconsistent - need rebuild
+}
+
+bool CheckA5SupplyConsistency(const uint256& chainTipHash, bool& fRequireRebuild)
+{
+    fRequireRebuild = false;
+    if (!g_settlementdb || !g_burnclaimdb) {
+        return true;   // reduced setups; the marker checks own the missing-DB cases
+    }
+
+    // Speak ONLY when both markers are at the tip — otherwise the LOT 1 marker
+    // checks have already forced the rebuild and this check would be redundant noise.
+    uint256 sMk, lMk;
+    if (!g_settlementdb->ReadBestBlock(sMk) || sMk != chainTipHash) return true;
+    if (!g_burnclaimdb->ReadBestBlock(lMk) || lMk != chainTipHash) return true;
+
+    SettlementState st;
+    if (!g_settlementdb->ReadLatestState(st)) {
+        // Marker at tip but the state record is unreadable: torn DB.
+        LogPrintf("A5: settlement marker at tip but latest state unreadable — requires rebuild\n");
+        fRequireRebuild = true;
+        return false;
+    }
+    const CAmount S = st.M0_total_supply;
+    const CAmount L = (CAmount)g_burnclaimdb->GetM0BTCSupply();
+    if (S != L) {
+        LogPrintf("A5: INDEPENDENT SUPPLY MISMATCH at tip %s: settlement M0_total=%lld != "
+                  "burn-ledger m0btcSupply=%lld — one accumulator is corrupt/torn, "
+                  "requires -reindex\n",
+                  chainTipHash.ToString().substr(0, 16), (long long)S, (long long)L);
+        fRequireRebuild = true;
+        return false;
+    }
+    LogPrintf("A5: independent totals agree at tip (S=L=%lld)\n", (long long)S);
+    return true;
 }
 
 // =============================================================================
@@ -620,7 +674,11 @@ bool IsSettlementDBMissing()
 }
 
 // =============================================================================
-// RebuildSettlementFromChain - Reconstruct settlement state from blockchain
+// RebuildSettlementFromChain - Reconstruct settlement state from blockchain.
+// LOT 1 round 12: NO CALLER REMAINS. -rebuildsettlement is refused in init.cpp and
+// the auto-repair was removed, because this wipes settlementdb before replaying and
+// replays against a non-wiped burnclaimdb (AUD-018). Kept only so the symbol and its
+// tests survive; do not re-wire it without fixing AUD-018 first.
 // BP30 Rebuild-From-Truth implementation
 // =============================================================================
 

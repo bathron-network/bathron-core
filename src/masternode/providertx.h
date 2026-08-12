@@ -171,6 +171,47 @@ public:
 };
 
 
+// LOT 9 M3 — operator lease renewal payload (spec §C / O-3).
+//
+// A DECLARATION OF PRESENCE that expires: no punishment, no ban, no reputation.
+// The payload is MINIMAL by design — the expiry height is NOT in it and NOT in
+// the signed message: consensus derives it from the inclusion height
+// (leaseExpiryHeight = inclusionHeight + nOperatorLeaseBlocks), so an operator
+// cannot choose its own horizon. Replay is structurally dead: the signed message
+// is domain-separated AND bound to the chain identity (genesisHash) and to a
+// strictly-increasing per-proTxHash sequence — an old lease re-broadcast fails
+// the sequence check, a foreign-chain lease fails the chain binding.
+class OperatorLeasePL
+{
+public:
+    static const uint16_t CURRENT_VERSION = 1;
+    static constexpr int16_t SPECIALTX_TYPE = CTransaction::TxType::TX_OPERATOR_LEASE;
+
+public:
+    uint16_t nVersion{CURRENT_VERSION}; // message version
+    uint256 proTxHash;
+    uint32_t nLeaseSequence{0};         // must be previous sequence + 1
+    std::vector<unsigned char> vchSig;  // operator-key compact signature over GetSignatureHash()
+
+public:
+    SERIALIZE_METHODS(OperatorLeasePL, obj)
+    {
+        READWRITE(obj.nVersion, obj.proTxHash, obj.nLeaseSequence);
+        if (!(s.GetType() & SER_GETHASH)) {
+            READWRITE(obj.vchSig);
+        }
+    }
+
+    //! The signed message: SHA256d("BATHRON_OPERATOR_LEASE_V1" || chainId ||
+    //! version || proTxHash || sequence). chainId = the network's genesis hash.
+    uint256 GetSignatureHash(const uint256& chainId) const;
+
+public:
+    std::string ToString() const;
+    void ToJson(UniValue& obj) const;
+    bool IsTriviallyValid(CValidationState& state) const;
+};
+
 // If tx is a ProRegTx, return the collateral outpoint in outRet.
 bool GetProRegCollateral(const CTransactionRef& tx, COutPoint& outRet);
 

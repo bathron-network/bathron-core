@@ -409,6 +409,24 @@ struct RolloverChainSetup : public TestChainSetup {
         // wipe an existing one: the mined chain's A5/A6 state lives there).
         if (!g_htlcdb) BOOST_REQUIRE(InitHtlcDB(1 << 20, /*fMemory=*/true, /*fWipe=*/true));
         if (!g_settlementdb) BOOST_REQUIRE(InitSettlementDB(1 << 20, /*fMemory=*/true));
+
+        // LOT 7 (L6-F16): a real node at this tip has BOTH derived-DB best-block markers
+        // at the tip and the settlement base state at the tip (every block writes them,
+        // specialtx_validation.cpp:1533-1547/1841-1843). This chain was mined with the
+        // derived DBs detached (TestingSetup nulls them), so they are freshly empty here.
+        // The gate reads an empty marker as "behind" and would refuse the real
+        // ConnectBlock below as a local fault. Seed the tip identity a real node would
+        // have — a zero base stamped with the tip's height/hash, plus both markers.
+        const CBlockIndex* tip = WITH_LOCK(cs_main, return chainActive.Tip());
+        if (tip) {
+            const uint256 tipHash = tip->GetBlockHash();
+            BOOST_REQUIRE(g_settlementdb->WriteBestBlock(tipHash));
+            SettlementState s;
+            s.nHeight = (uint32_t)tip->nHeight;
+            s.hashBlock = tipHash;
+            BOOST_REQUIRE(g_settlementdb->WriteState(s));
+            BOOST_REQUIRE(g_htlcdb->WriteBestBlock(tipHash));
+        }
     }
 };
 

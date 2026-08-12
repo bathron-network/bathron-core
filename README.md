@@ -15,14 +15,20 @@ lives in one canonical place — this README does not duplicate it:
 - 📖 **Documentation source:** <https://github.com/bathron-network/bathron-network.github.io/tree/main/docs/src>
 - 🔒 **Security model:** <https://bathron.org/docs/learn/security-model.html> · report privately to security@bathron.org (see [`SECURITY.md`](SECURITY.md))
 - 🧠 **Consensus & finality:** <https://bathron.org/docs/learn/consensus.html>
-- 🚀 **Run a node / join the public testnet:** <https://bathron.org/docs/getting-started/run-a-node.html>
+- 🚀 **Run a peer node:** <https://bathron.org/docs/getting-started/run-a-node.html>
 - 📦 **Releases:** <https://github.com/bathron-network/bathron-core/releases>
 
 ## ⚠️ Experimental
 
-This is experimental software running a **public testnet with a disposable genesis**. There is no
-mainnet, and the complete cross-chain safety model is not yet formally specified or externally
+This is experimental software running a **measurement network with a disposable genesis**. There is
+no mainnet, and the complete cross-chain safety model is not yet formally specified or externally
 reviewed. Do not treat the internal units (M0/M1) as an investment or a redeemable claim on Bitcoin.
+
+The current network exists to **measure** the consensus under real conditions, not to serve users.
+Its operator set is closed while the open-admission threat model is still being worked out, so
+anyone can run a **peer node** and verify the chain, but operator registration is not open. The
+Bitcoin source for burn verification is **Testnet4**, which proves the burn→claim→mint flow — not
+mainnet-equivalent economic security.
 
 ## Build
 
@@ -39,9 +45,9 @@ make -j$(nproc)
 This produces `src/bathrond` (daemon) and `src/bathron-cli` (RPC client). macOS instructions and
 release binaries: <https://bathron.org/docs/getting-started/run-a-node.html>.
 
-## Join the public testnet
+## Run a peer node on the measurement network
 
-Only the public seed is needed to join — no RPC access and no operator address are required:
+Only the public seed is needed to sync — no RPC access and no operator address are required:
 
 ```bash
 mkdir -p ~/.bathron
@@ -49,8 +55,8 @@ printf 'testnet=1\n[test]\naddnode=57.131.33.151\n' > ~/.bathron/bathron.conf
 # release package: binaries are in bin/ — from a source build they are in src/
 ./bin/bathrond -testnet -daemon
 ./bin/bathron-cli -testnet getblockhash 0
-# expected genesis:
-# 0d241620b8beb492fd21bd8a92295260a4afa1b82e1bd816d18323cc3c98ea71
+# expected genesis (measurement network, epoch 4):
+# 691b0a7e8cb0e7ee159ef7a4fa10d9c6ddb2d5282e5bac7447846459ff54c730
 ./bin/bathron-cli -testnet getblockcount   # syncs to the network tip
 ```
 

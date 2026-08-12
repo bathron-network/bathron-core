@@ -10,6 +10,7 @@
 #include "uint256.h"
 #include "vrf.h"
 
+#include <limits>
 #include <vector>
 
 class CBlockIndex;
@@ -76,6 +77,18 @@ uint256 GetHuFinalitySeedHash(const CBlockIndex* pindex, int nSeedOffset);
  */
 std::map<CPubKey, CDeterministicMNCPtr> GetUniqueOperators(const CDeterministicMNList& mnList);
 
+/**
+ * LOT 9 M3 — THE finality population for the block extending pindexPrev:
+ * finalitySet == productionSet of the epoch snapshot (confirmed/bootstrap AND
+ * lease-valid at snapshotHeight), spec O-2. During the bootstrap window it falls
+ * back to the legacy parent-list population (the snapshot may not exist yet).
+ * On any local gap (DEFERRED/FATAL-shaped) it returns EMPTY — fail-closed, and a
+ * finality/gossip read never fires the fatal latch.
+ * Every N used by finality (context eligibleOperators, HuFinalityOperatorCount,
+ * signer-side sortition, threshold) derives from THIS function.
+ */
+std::map<CPubKey, CDeterministicMNCPtr> GetEpochFinalityOperators(const CBlockIndex* pindexPrev);
+
 // NOTE: the top-N committee machinery (GetHuQuorumOperators, ComputeOperatorScore,
 // GetFinalityCommittee, IsInFinalityCommittee, IsOperatorInHuQuorum) was removed —
 // finality is VRF-only. Committee membership is decided per-block by ECVRF sortition
@@ -133,7 +146,22 @@ int HuVrfFinalityThreshold(int E);
  * VRF selection uses — so signer, verifier and threshold all agree deterministically.
  * nOperators<=0 falls back to E (conservative high threshold, never trivially met).
  */
+//! Returned by HuActiveFinalityThreshold when the Sybil floor (nHuQuorumSize) is NOT
+//! met by the block's operator population (AUD-002 / LOT 4). It is deliberately a
+//! value no achievable unique-operator count can reach, so such a block is never
+//! final — on the write side AND on the read side, since both re-derive through the
+//! same function. Callers compare `count >= threshold`; they need no special case.
+static constexpr int HU_FINALITY_THRESHOLD_UNREACHABLE = std::numeric_limits<int>::max();
+
 int HuActiveFinalityThreshold(const Consensus::Params& consensus, int nOperators);
+
+//! True iff the block's operator population meets the Sybil floor, i.e. finality is
+//! achievable at all. Exposed so diagnostics (RPC) can say "unreachable" instead of
+//! printing the sentinel, without duplicating the rule.
+inline bool HuFinalityFloorMet(const Consensus::Params& consensus, int nOperators)
+{
+    return HuActiveFinalityThreshold(consensus, nOperators) != HU_FINALITY_THRESHOLD_UNREACHABLE;
+}
 
 /**
  * Verify a VRF proof for the block at `pindex` and decide committee membership.

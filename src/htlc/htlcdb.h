@@ -281,4 +281,33 @@ bool InitHtlcDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
  * @return true if htlc/ directory is missing or empty
  */
 
+
+// =============================================================================
+// Startup consistency gate (LOT 1 round 4)
+// =============================================================================
+/**
+ * CheckHtlcDBConsistency - htlcdb's best-block marker must match the chain tip.
+ *
+ * Until round 4 htlcdb was the ONE ConnectBlock-mutable consensus DB with no marker
+ * and no startup check, so a crash after its batch committed left orphaned HTLC
+ * records that every other detector reported as healthy (row 4 of the injection
+ * matrix). The marker is written INSIDE the same WriteBatch as the mutations, so it
+ * can never be ahead of or behind the records it vouches for.
+ *
+ * Four states, symmetric with the settlement and burnclaim gates:
+ *   marker absent + tip == genesis  -> PASS (fresh chain, nothing committed yet);
+ *   marker absent + tip >  genesis  -> FAIL CLOSED, rebuild required (the marker
+ *                                      advances on EVERY connected block, so its
+ *                                      absence means the DB was wiped or lost);
+ *   marker == tip                   -> PASS;
+ *   marker != tip                   -> FAIL CLOSED, rebuild required.
+ * Startup gate only — never a DoS, ban or BLOCK_FAILED_* verdict, and the marker is
+ * never silently repaired.
+ *
+ * @param chainTipHash   Current chain tip
+ * @param fRequireRebuild [out] set when the DB diverges and recovery is required
+ * @return true if consistent
+ */
+bool CheckHtlcDBConsistency(const uint256& chainTipHash, bool& fRequireRebuild);
+
 #endif // BATHRON_HTLCDB_H

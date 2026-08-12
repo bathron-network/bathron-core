@@ -16,6 +16,23 @@
 
 #include <assert.h>
 
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+void CChainParams::UpdateLabDMMParams(int nQuorumSize, int nCommitteeSize, int nBootstrapHeight,
+                                      int nLeaseBlocks)
+{
+    assert(IsRegTestNet());   // laboratory only, exactly like -nuparams
+    assert(nQuorumSize >= 1 && nCommitteeSize >= 1 && nBootstrapHeight >= 1 && nLeaseBlocks >= 1);
+    consensus.nHuQuorumSize = nQuorumSize;
+    consensus.nHuExpectedCommitteeSize = nCommitteeSize;
+    consensus.nDMMBootstrapHeight = nBootstrapHeight;   // schedule anchor = +1
+    // LOT 9 M3: the lease horizon. The shipped value is 10080 blocks (~7 days),
+    // which no local test can wait out — an unshortenable horizon is exactly why
+    // the renewal path stayed unmeasured. Shortening it here measures the SAME
+    // rule (expiry = inclusionHeight + horizon) on a timescale a test can reach.
+    consensus.nOperatorLeaseBlocks = nLeaseBlocks;
+}
+#endif
+
 void CChainParams::UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight)
 {
     assert(IsRegTestNet()); // -nuparams overrides are regtest-only (a testnet operator must not self-fork via config)
@@ -66,14 +83,18 @@ static CBlock CreateBathronGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_
  * Block 0: Coinbase = 0 BATHRON (symbolic, not spendable)
  * Block 1+: TX_BTC_HEADERS, then TX_BURN_CLAIM, then TX_MINT_M0BTC
  *
- * ALL M0 originates from verified BTC Signet burns.
+ * ALL M0 originates from verified Bitcoin burns (mainnet; Testnet4 on the measurement network).
  * No premine, no snapshot, no hardcoded allocation.
  * No virtual/genesis MN injection — MNs are registered by ProRegTx at block 2+.
  */
 static CBlock CreateBathronTestnetGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits, int32_t nVersion)
 {
     // NOTE: pszTimestamp is consensus-critical (changes genesis hash). DO NOT MODIFY.
-    const char* pszTimestamp = "BATHRON Testnet Dec 2025 - Snapshot Genesis v4 - DMM from Block 1";
+    // 2026-08-04 RESET: the previous public testnet (genesis 0d241620…) is
+    // SUPERSEDED. Its balances, operators and height are NOT carried over —
+    // there is no migration and no snapshot. This chain starts empty and takes
+    // its monetary source from Bitcoin Testnet4 (BIP-94).
+    const char* pszTimestamp = "BATHRON Testnet4 Genesis 2026-08-04 - previous testnet superseded - M0 from Bitcoin Testnet4 burns only";
 
     CMutableTransaction txNew;
     txNew.nVersion = 1;
@@ -116,8 +137,26 @@ static CBlock CreateBathronRegtestGenesisBlock(uint32_t nTime, uint32_t nNonce, 
     txNew.vin.resize(1);
     txNew.vin[0].scriptSig = CScript() << 486604799 << CScriptNum(4) << std::vector<unsigned char>((const unsigned char*)pszTimestamp, (const unsigned char*)pszTimestamp + strlen(pszTimestamp));
 
+#ifndef BATHRON_ENABLE_LAB_PREMINE
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RELEASE BUILD — BURN-ONLY regtest genesis (LOT 9 M4).
+    // ═══════════════════════════════════════════════════════════════════════════
+    // The convenience premine below is a LABORATORY mechanism: it funds collateral
+    // without a BTC burn, which is an intentional deviation from the burn-only
+    // model and PROVES NOTHING about A5. It is therefore compile-gated and ABSENT
+    // from any binary not configured with --enable-lab-premine: no outputs, no
+    // scripts, no key hashes — nm/strings on a stripped release find nothing.
+    // Regtest's genesis hash is deliberately UNPINNED (see the caller), so the two
+    // builds simply have different regtest genesis blocks, which is correct: a
+    // release binary has no business replaying a laboratory chain.
+    txNew.vout.resize(1);
+    txNew.vout[0].nValue = 0;
+    txNew.vout[0].scriptPubKey = CScript() << OP_DUP << OP_HASH160
+        << ParseHex("0000000000000000000000000000000000000000") << OP_EQUALVERIFY << OP_CHECKSIG;
+#else
     // ═══════════════════════════════════════════════════════════════════════════
     // BATHRON Regtest Distribution - P2PKH outputs with KNOWN private keys
+    // LAB-ONLY (--enable-lab-premine). NEVER a monetary proof; never in release.
     // ═══════════════════════════════════════════════════════════════════════════
     //
     // Generated from regtest wallet - NEVER use on mainnet!
@@ -181,6 +220,7 @@ static CBlock CreateBathronRegtestGenesisBlock(uint32_t nTime, uint32_t nNonce, 
     // Output 6: Reserve (500K M0)
     txNew.vout[6].nValue = 500000 * COIN;
     txNew.vout[6].scriptPubKey = CScript() << OP_DUP << OP_HASH160 << ParseHex("9ded13f5233a7fede9f7f70de3a9739d1405d001") << OP_EQUALVERIFY << OP_CHECKSIG;
+#endif  // BATHRON_ENABLE_LAB_PREMINE
 
     CBlock genesis;
     genesis.vtx.push_back(std::make_shared<const CTransaction>(std::move(txNew)));
@@ -280,8 +320,16 @@ public:
         consensus.nHuFinalitySeedOffset = 6;        // Finality seed = hash(H-6) (anti double-lever)
         consensus.nHuExpectedCommitteeSize = 128;   // E = VRF committee CAP. Threshold = ceil(2/3·min(E,N)): N<=E whole population, N>E sampled ~E. One fixed E scales few→thousands of operators with no retuning.
         consensus.nHuLeaderTimeoutSeconds = 45;     // DMM leader timeout (fallback after 45s)
-        consensus.nHuFallbackRecoverySeconds = 15;  // Recovery window for fallback MNs
-        consensus.nDMMBootstrapHeight = 10;         // Bootstrap phase (no slot calculation for cold start)
+        consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= FutureBlockTimeDrift(14)+15=29. Was 15 => a 1-second margin, too fragile for a consensus liveness rule.
+        consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)
+        // LOT 9 M3.1 — 10 -> 250, MEASURED (doc/LOT9-M31-ACTIVATION-MEASUREMENT.md).
+        // This height is the schedule anchor (activation = +1, snapshot = this block),
+        // so it MUST exceed the minimal launch path: genesis -> headers -> claim ->
+        // K_FINALITY(100) -> mint -> collateral funding -> 7 ProRegTx = 105 blocks.
+        // At 10 the launch registrations could not be bootstrap-trusted at all and the
+        // first epoch snapshot resolved an empty list — the root cause of the M3 gap.
+        // 250 keeps a documented ~145-block operational margin.
+        consensus.nDMMBootstrapHeight = 250;        // Bootstrap window AND schedule anchor
         consensus.nHuMaxReorgDepth = 0;             // No artificial limit - reorg blocked by actual HU finality only
         consensus.nStaleChainTimeout = 3600;        // SECURITY: 1 hour for mainnet cold start recovery
 
@@ -293,6 +341,10 @@ public:
         // ═══════════════════════════════════════════════════════════════════════
         consensus.burnScanBtcHeightStart = 840000;   // MAINNET: Start at halving block (2024)
         consensus.burnScanBtcHeightEnd = 840000;     // MAINNET: No genesis burns range
+
+        // Bitcoin source: the future public BATHRON network reads Bitcoin MAINNET.
+        // Consensus-committed — no runtime flag can change it.
+        consensus.btcSourceNet = BtcSourceNet::BITCOIN_MAINNET;
 
         // ALL upgrades active from GENESIS (no height-based activation)
         // This is the BATHRON way: clean start, all features active from block 0
@@ -325,11 +377,7 @@ public:
         consensus.vUpgrades[Consensus::UPGRADE_M1_RECEIPT_PROTECTED].nActivationHeight =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
         // PoSe producer-decay rule. Fresh-genesis mainnet -> ALWAYS_ACTIVE: penalty
-        // decays only when the MN successfully produces, so the 3-strike ban is
-        // actually reachable from block 1 (the legacy every-block decay capped any
-        // penalty at 1 — ban mathematically unreachable).
-        consensus.vUpgrades[Consensus::UPGRADE_POSE_PRODUCER_DECAY].nActivationHeight =
-                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
+        // LOT 9 M2: UPGRADE_POSE_PRODUCER_DECAY removed with the temporal-PoSe system.
         consensus.vUpgrades[Consensus::UPGRADE_BTCSTATE].nActivationHeight             =
                 Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;  // A1: flip ALWAYS_ACTIVE at mainnet freeze (with UPGRADE_V7_0)
         consensus.vUpgrades[Consensus::UPGRADE_CSFS].nActivationHeight                 =
@@ -407,18 +455,23 @@ public:
         // ═══════════════════════════════════════════════════════════════════════
         // Block 0: Coinbase = 0 BATHRON (symbolic, not spendable)
         // Block 1+: TX_BTC_HEADERS → TX_BURN_CLAIM → TX_MINT_M0BTC
-        // ALL M0 from verified BTC Signet burns. No premine.
+        // ALL M0 from verified Bitcoin Testnet4 burns. No premine.
         // No virtual/genesis MN injection — MNs registered by ProRegTx at block 2+.
         // ═══════════════════════════════════════════════════════════════════════
-        genesis = CreateBathronTestnetGenesisBlock(1733443200, 0, 0x1e0ffff0, 1);  // Dec 6, 2025
+        genesis = CreateBathronTestnetGenesisBlock(1785801600, 0, 0x1e0ffff0, 1);  // 2026-08-04 00:00:00 UTC
         consensus.hashGenesisBlock = genesis.GetHash();
 
         // PINNED testnet genesis — tamper-evident, same rationale as mainnet: any drift
         // in the genesis params trips these at startup instead of silently forking.
         // (Values = the LIVE testnet5 chain's block 0; genesis is accepted by hash
         // equality, no PoW check applies to it — hence nNonce 0 is fine.)
-        assert(consensus.hashGenesisBlock == uint256S("0x0d241620b8beb492fd21bd8a92295260a4afa1b82e1bd816d18323cc3c98ea71"));
-        assert(genesis.hashMerkleRoot == uint256S("0xac29023ab4ca879615c05a7ec9be67ba15b526daacbcfc633dbe14e934f57c7c"));
+        // PINNED testnet genesis — tamper-evident: any drift in the genesis params
+        // trips these at startup instead of silently forking. Values below are the
+        // 2026-08-04 RESET genesis (previous testnet 0d241620… is superseded and is
+        // NOT reachable from this binary). Reproduced byte-identically from two
+        // independent clean clones — see doc/NEW-GENESIS-HANDOFF.md.
+        assert(consensus.hashGenesisBlock == uint256S("0x691b0a7e8cb0e7ee159ef7a4fa10d9c6ddb2d5282e5bac7447846459ff54c730"));
+        assert(genesis.hashMerkleRoot == uint256S("0xca0cc3b20bfbb4d84ba56aa760bcb85bbd6637973a12ce24c69d0d2ad79c445a"));
 
         // ═══════════════════════════════════════════════════════════════════════
         // HU Core Economic Parameters - TESTNET
@@ -446,8 +499,12 @@ public:
         consensus.nHuFinalitySeedOffset = 3;        // Finality seed = hash(H-3) (anti double-lever)
         consensus.nHuExpectedCommitteeSize = 128;   // E = VRF committee CAP (same as mainnet). Threshold = ceil(2/3·min(E,N)); at N=3 today → min=3 → 2/3 (auto-scales as operators join)
         consensus.nHuLeaderTimeoutSeconds = 45;     // Leader timeout (was 30, increased for reliability)
-        consensus.nHuFallbackRecoverySeconds = 15;  // Fallback window (was 10)
-        consensus.nDMMBootstrapHeight = 250;         // Bootstrap: header catch-up + burn claims + 20 K_FINALITY + mint + MN reg + margin
+        consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= FutureBlockTimeDrift(14)+15=29 (was 15, margin of 1 s).
+        consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)
+        // LOT 9 M3.1 — unchanged (250), but its role is now DOUBLE: bootstrap window
+        // AND schedule anchor (activation = +1, snapshot = this block). Minimal launch
+        // path measured at 25 blocks on testnet (K_FINALITY=20), so the margin is ~225.
+        consensus.nDMMBootstrapHeight = 250;        // Bootstrap window AND schedule anchor
         consensus.nHuMaxReorgDepth = 0;             // No artificial limit - reorg blocked by actual HU finality only
         consensus.nStaleChainTimeout = 600;         // 10 minutes for testnet cold start recovery
 
@@ -457,8 +514,15 @@ public:
         // BTC SPV & Burn Parameters - TESTNET
         // All burns (including pre-launch) detected by burn_claim_daemon
         // ═══════════════════════════════════════════════════════════════════════
-        consensus.burnScanBtcHeightStart = 200000;   // TESTNET/Signet: Start from checkpoint
-        consensus.burnScanBtcHeightEnd = 300000;     // TESTNET/Signet: ~6 months after checkpoint
+        consensus.burnScanBtcHeightStart = 145152;   // TESTNET4: Start from the SPV genesis checkpoint
+        consensus.burnScanBtcHeightEnd = 245152;     // TESTNET4: ~100k blocks after checkpoint
+
+        // Bitcoin source: the BATHRON measurement network reads Bitcoin
+        // TESTNET4 (BIP-94). Testnet4 proves the open burn→claim→mint flow,
+        // NOT mainnet-equivalent economic security. Consensus-committed — no
+        // runtime flag can change it. (Signet is refused as a monetary source:
+        // its header PoW is CPU-forgeable without the BIP-325 witness.)
+        consensus.btcSourceNet = BtcSourceNet::BITCOIN_TESTNET4;
 
         // ALL upgrades active from GENESIS (no height-based activation)
         // This is the BATHRON way: clean start, all features active from block 0
@@ -491,11 +555,7 @@ public:
         // settlement tx: TX_UNLOCK / TX_TRANSFER_M1 / HTLC_CREATE_M1 / HTLC_CREATE_3S).
         consensus.vUpgrades[Consensus::UPGRADE_M1_RECEIPT_PROTECTED].nActivationHeight =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
-        // PoSe producer-decay rule: baked in at genesis (ALWAYS_ACTIVE, like mainnet).
-        // The historical testnet h1500 height-gate is gone — the reset chain enforces
-        // the real 3-strike decay from block 1.
-        consensus.vUpgrades[Consensus::UPGRADE_POSE_PRODUCER_DECAY].nActivationHeight =
-                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // baked in at genesis (was h1500 on the pre-reset chain)
+        // LOT 9 M2: UPGRADE_POSE_PRODUCER_DECAY removed with the temporal-PoSe system.
         consensus.vUpgrades[Consensus::UPGRADE_BTCSTATE].nActivationHeight             =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // A1: active from next disposable genesis
         consensus.vUpgrades[Consensus::UPGRADE_CSFS].nActivationHeight                 =
@@ -526,10 +586,18 @@ public:
         // BATHRON Testnet Magic Bytes - includes TESTNET_EPOCH to prevent old nodes connecting
         // When creating a new testnet genesis, increment TESTNET_EPOCH in version.h
         // Format: 0xfa 0xbf 0xb5 0x(da + TESTNET_EPOCH)
+        // The magic must differ from every network a node could meet on this port:
+        // epoch 3 (0xdd) = the superseded live testnet5 fleet, epoch 2 (0xdc) = the
+        // 2025 reset before it, and the BATHRON mainnet/regtest magics (0xba 74 68 ..).
+        // TESTNET_EPOCH is a compile-time constant with no runtime override, so these
+        // asserts are the whole proof.
+        static_assert(0xda + TESTNET_EPOCH == 0xde, "measurement-network testnet magic byte must be 0xde (epoch 4)");
+        static_assert(0xda + TESTNET_EPOCH != 0xdd, "testnet magic collides with the superseded epoch-3 (testnet5) network");
+        static_assert(0xda + TESTNET_EPOCH != 0xdc, "testnet magic collides with the epoch-2 network");
         pchMessageStart[0] = 0xfa;
         pchMessageStart[1] = 0xbf;
         pchMessageStart[2] = 0xb5;
-        pchMessageStart[3] = 0xda + TESTNET_EPOCH;  // Epoch 2 = 0xdc
+        pchMessageStart[3] = 0xda + TESTNET_EPOCH;  // Epoch 4 = 0xde (measurement network)
         nDefaultPort = 27171;  // BATHRON Testnet P2P port
 
 
@@ -604,9 +672,15 @@ public:
         consensus.nHuFinalityLagWarning = 1;        // Diagnostic: any lag → "lagging" (regtest)
         consensus.nHuFinalitySeedOffset = 1;        // Finality seed = hash(H-1) (single-MN regtest, no-op)
         consensus.nHuExpectedCommitteeSize = 1;     // E = VRF committee CAP (regtest: single MN)
-        consensus.nHuLeaderTimeoutSeconds = 5;      // Short timeout (less relevant in regtest)
-        consensus.nHuFallbackRecoverySeconds = 2;   // Ultra-fast for regtest
-        consensus.nDMMBootstrapHeight = 2;          // Bootstrap phase (no slot calculation for cold start)
+        consensus.nHuLeaderTimeoutSeconds = 45;     // LOT 9 M1 invariant I1: >= FutureBlockTimeDrift(14)+15. NO regtest shortcut — a 5 s timeout made slot 1 free (drift 14 > 5); tests drive time with mocktime instead.
+        consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= drift(14)+15. Was 2 s => 7 FREE slots on regtest.
+        consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)
+        // LOT 9 M3.1 — bootstrap window AND schedule anchor (activation 3, snapshot 2).
+        // The RULE is identical to the public networks (no regtest shortcut); only the
+        // VALUE is small, and it is viable ONLY because the regtest genesis carries a
+        // convenience premine that skips the burn->K_FINALITY->mint path entirely.
+        // That premine speed must NEVER justify a public value (measurement doc §4).
+        consensus.nDMMBootstrapHeight = 2;          // Bootstrap window AND schedule anchor
         consensus.nHuMaxReorgDepth = 100;           // Large tolerance for test scenarios
         consensus.nStaleChainTimeout = 60;          // 1 minute for regtest cold start recovery
 
@@ -618,6 +692,11 @@ public:
         // ═══════════════════════════════════════════════════════════════════════
         consensus.burnScanBtcHeightStart = 0;        // REGTEST: Scan all heights
         consensus.burnScanBtcHeightEnd = UINT32_MAX; // REGTEST: No height restriction
+
+        // Bitcoin source: EXPLICIT fixture choice — regtest keeps Bitcoin
+        // MAINNET params (the P0 regtest vectors are real mainnet headers;
+        // regtest reaches no BTC checkpoint so R6 keeps its bootstrap skip).
+        consensus.btcSourceNet = BtcSourceNet::BITCOIN_MAINNET;
 
         // ALL upgrades active from GENESIS (no height-based activation)
         // This is the BATHRON way: clean start, all features active from block 0
@@ -641,8 +720,6 @@ public:
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // BTC header reorg: active on regtest
         consensus.vUpgrades[Consensus::UPGRADE_M1_RECEIPT_PROTECTED].nActivationHeight =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // M1 receipt guard: active on regtest
-        consensus.vUpgrades[Consensus::UPGRADE_POSE_PRODUCER_DECAY].nActivationHeight =
-                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // PoSe producer-decay: active on regtest
         consensus.vUpgrades[Consensus::UPGRADE_BTCSTATE].nActivationHeight             =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // A1: active on regtest
         consensus.vUpgrades[Consensus::UPGRADE_CSFS].nActivationHeight                 =
@@ -726,3 +803,11 @@ void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivation
 {
     globalChainParams->UpdateNetworkUpgradeParameters(idx, nActivationHeight);
 }
+
+#ifdef BATHRON_ENABLE_LAB_PREMINE
+void UpdateLabDMMParams(int nQuorumSize, int nCommitteeSize, int nBootstrapHeight,
+                        int nLeaseBlocks)
+{
+    globalChainParams->UpdateLabDMMParams(nQuorumSize, nCommitteeSize, nBootstrapHeight, nLeaseBlocks);
+}
+#endif

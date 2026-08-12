@@ -16,6 +16,11 @@
 #include <string>
 #include <vector>
 
+// AUD-001 (LOT 5): VerifySignature takes the MN list explicitly. Forward-declared
+// rather than included — deterministicmns.h pulls in validation-layer headers and
+// this header is included from the payload/serialization side.
+class CDeterministicMNList;
+
 class CBlockIndex;
 class CValidationState;
 
@@ -42,11 +47,11 @@ static const uint8_t BTCHEADERS_VERSION = 1;                // Current payload v
 // This prevents monopolization while allowing rapid catch-up when needed
 static const int BTCHEADERS_PUBLISHER_COOLDOWN = 3;
 
-// Signet-default FALLBACK genesis checkpoint only. The authoritative, NETWORK-AWARE
-// value comes from g_btc_spv->GetGenesisCheckpoint() (mainnet 800000 / signet 286000) —
+// Testnet4-default FALLBACK genesis checkpoint only. The authoritative, NETWORK-AWARE
+// value comes from g_btc_spv->GetGenesisCheckpoint() (mainnet 800000 / testnet4 145152) —
 // callers must use that, not this const. Kept as a compile-time default for the rare
-// path where btcspv is unavailable. (Signet: BEFORE first burn 286326 for clean discovery.)
-static const uint32_t BTCHEADERS_GENESIS_CHECKPOINT = 286000;
+// path where btcspv is unavailable. (145152 = retarget boundary 72*2016.)
+static const uint32_t BTCHEADERS_GENESIS_CHECKPOINT = 145152;
 
 // Max headers per genesis/bootstrap TX_BTC_HEADERS chunk.
 // Capped so the serialized payload (count*80 + ~40) stays under
@@ -116,8 +121,19 @@ struct BtcHeadersPayload
     /**
      * Verify the ECDSA signature using the MN's operator key.
      * CRITICAL: The key must match publisherProTxHash (anti-spoof).
+     *
+     * AUD-001 (LOT 5) — the MN list is now an EXPLICIT ARGUMENT and there is no
+     * no-argument overload. The old signature resolved the publisher (and its
+     * operator key) from `GetListAtChainTip()`, i.e. from node-local mutable
+     * state, which made a CONSENSUS verdict depend on where the local tip
+     * happened to point. Consensus no longer calls this at all: CheckBtcHeadersTx
+     * resolves the publisher once from the block's own parent and verifies the
+     * signature inline against that `dmn`. Callers that remain are non-consensus
+     * (the local publisher and an RPC); forcing them to name a list means this
+     * helper cannot be silently re-adopted into a validity path with tip
+     * semantics — the mistake would have to be written out explicitly.
      */
-    bool VerifySignature() const;
+    bool VerifySignature(const CDeterministicMNList& mnList) const;
 
     /**
      * Basic validation (version, count, size, count matches headers.size()).

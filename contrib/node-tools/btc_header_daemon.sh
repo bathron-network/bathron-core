@@ -4,18 +4,18 @@
 # ==============================================================================
 #
 # This daemon runs on the Seed node and:
-#   1. Polls BTC Signet for new blocks (every 2 minutes)
+#   1. Polls Bitcoin Testnet4 for new blocks (every 2 minutes)
 #   2. Fetches missing headers from BTC node
 #   3. Submits them to BATHRON btcspv via submitbtcheaders RPC
 #   4. The auto-publisher (btcheaders_publisher.cpp) then creates TX_BTC_HEADERS
 #
 # Flow:
-#   BTC Signet → [this daemon] → submitbtcheaders → btcspv
+#   Bitcoin Testnet4 → [this daemon] → submitbtcheaders → btcspv
 #                                                      ↓
 #                              auto-publisher (60s) → TX_BTC_HEADERS → btcheadersdb
 #
 # Requirements:
-#   - bitcoin-cli configured for Signet (~/.bitcoin-signet/bitcoin.conf)
+#   - bitcoin-cli configured for Testnet4 v28+ (~/.bitcoin-testnet4/bitcoin.conf)
 #   - bathron-cli configured for testnet
 #   - Run on the public seed node (set PUBLIC_SEED_HOST at deployment)
 #
@@ -40,9 +40,9 @@ MAX_HEADERS_PER_BATCH=100       # Max headers per submitbtcheaders call
 PID_FILE="/tmp/btc_header_daemon.pid"
 LOG_FILE="/tmp/btc_header_daemon.log"
 
-# Bitcoin CLI (Signet)
-BTC_CLI="${BTC_CLI:-$HOME/bitcoin-27.0/bin/bitcoin-cli}"
-BTC_CONF="${BTC_CONF:-$HOME/.bitcoin-signet/bitcoin.conf}"
+# Bitcoin CLI (Testnet4 — requires Bitcoin Core v28+)
+BTC_CLI="${BTC_CLI:-$HOME/bitcoin-28.1/bin/bitcoin-cli}"
+BTC_CONF="${BTC_CONF:-$HOME/.bitcoin-testnet4/bitcoin.conf}"
 BTC_CMD="$BTC_CLI -conf=$BTC_CONF"
 
 # BATHRON CLI
@@ -87,7 +87,7 @@ log_error() {
 # Helper Functions
 # ==============================================================================
 
-# Get BTC Signet tip height
+# Get Bitcoin Testnet4 tip height
 get_btc_tip() {
     $BTC_CMD getblockcount 2>/dev/null || echo "-1"
 }
@@ -125,7 +125,7 @@ sync_once() {
     local headers_tip=$(get_headers_tip)
 
     if [[ "$btc_tip" == "-1" ]]; then
-        log_error "Cannot reach BTC Signet node"
+        log_error "Cannot reach Bitcoin Testnet4 node"
         return 1
     fi
 
@@ -139,7 +139,7 @@ sync_once() {
     log "BTC=$btc_tip, SPV=$spv_tip, Headers=$headers_tip, diff=$diff"
 
     if [[ $diff -le 0 ]]; then
-        log_success "btcspv is synced with BTC Signet"
+        log_success "btcspv is synced with Bitcoin Testnet4"
         return 0
     fi
 
@@ -247,7 +247,7 @@ cmd_start() {
 
     # Verify dependencies
     if ! $BTC_CMD getblockcount >/dev/null 2>&1; then
-        log_error "Cannot connect to BTC Signet node"
+        log_error "Cannot connect to Bitcoin Testnet4 node"
         log "  Check: $BTC_CMD getblockcount"
         exit 1
     fi
@@ -337,9 +337,9 @@ cmd_status() {
     # Check BTC node
     local btc_tip=$(get_btc_tip)
     if [[ "$btc_tip" == "-1" ]]; then
-        echo -e "BTC Signet: ${RED}UNREACHABLE${NC}"
+        echo -e "Bitcoin Testnet4: ${RED}UNREACHABLE${NC}"
     else
-        echo -e "BTC Signet: ${GREEN}OK${NC} (tip=$btc_tip)"
+        echo -e "Bitcoin Testnet4: ${GREEN}OK${NC} (tip=$btc_tip)"
     fi
 
     # Check BATHRON node
@@ -391,7 +391,7 @@ cmd_help() {
     cat <<EOF
 BTC Header Daemon for BATHRON Testnet
 
-Syncs BTC Signet headers to BATHRON btcspv, enabling TX_BTC_HEADERS publishing.
+Syncs Bitcoin Testnet4 headers to BATHRON btcspv, enabling TX_BTC_HEADERS publishing.
 
 Usage:
   $0 start       Start daemon in background
@@ -406,13 +406,13 @@ Files:
   LOG:  $LOG_FILE
 
 Environment:
-  BTC_CLI       Path to bitcoin-cli (default: ~/bitcoin-27.0/bin/bitcoin-cli)
-  BTC_CONF      Bitcoin config file (default: ~/.bitcoin-signet/bitcoin.conf)
+  BTC_CLI       Path to bitcoin-cli (default: ~/bitcoin-28.1/bin/bitcoin-cli)
+  BTC_CONF      Bitcoin config file (default: ~/.bitcoin-testnet4/bitcoin.conf)
   BATHRON_CLI      Path to bathron-cli (default: ~/bathron-cli)
   INTERVAL      Sync interval in seconds (default: 120)
 
 Architecture:
-  BTC Signet ──[this daemon]──> submitbtcheaders ──> btcspv
+  Bitcoin Testnet4 ──[this daemon]──> submitbtcheaders ──> btcspv
                                                         │
                               auto-publisher (60s) <────┘
                                       │

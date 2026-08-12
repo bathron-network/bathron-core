@@ -494,6 +494,15 @@ void ArgsManager::ForceSetArg(const std::string& strArg, const std::string& strV
     m_override_args[strArg] = {strValue};
 }
 
+void ArgsManager::ForceRemoveArg(const std::string& strArg)
+{
+    LOCK(cs_args);
+    m_override_args.erase(strArg);
+    m_config_args.erase(strArg);
+    // Network-qualified config entries ("main.foo" etc.) would also mask absence.
+    if (!m_network.empty()) m_config_args.erase(m_network + '.' + strArg);
+}
+
 static const int screenWidth = 79;
 static const int optIndent = 2;
 static const int msgIndent = 7;
