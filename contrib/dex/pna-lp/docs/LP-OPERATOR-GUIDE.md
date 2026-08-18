@@ -1,6 +1,13 @@
 # LP Operator Guide
 
-Guide for running a P&A Liquidity Provider node on BATHRON testnet.
+> **Historical prototype guide.** Written for the previous public testnet (Bitcoin **signet** leg,
+> USDC leg on an EVM testnet). The current measurement network reads Bitcoin **testnet4** and this
+> prototype has not been migrated; the demonstrators are not currently deployed. Kept as a
+> reference for the quote / HTLC-orchestration flow. Roles, economics and what is actually
+> demonstrated are documented canonically at <https://bathron.org/docs/markets/roles.html> and
+> <https://bathron.org/docs/consensus/status-and-claims.html>.
+
+Guide for running a P&A Liquidity Provider node on the (previous) BATHRON testnet.
 
 ## Overview
 
@@ -32,7 +39,6 @@ In single-LP mode, one LP handles both legs. In per-leg mode, two independent LP
 cd ~
 git clone https://github.com/bathron-network/bathron-core.git
 cd bathron-core/contrib/dex/pna-lp
-cd pna-lp
 
 # 2. Create virtual environment
 python3 -m venv venv
@@ -45,22 +51,10 @@ pip install -r requirements.txt
 LP_ID=lp_pna_01 LP_NAME="My LP" python3 server.py
 ```
 
-### Option B: Docker
+### Option B: Docker — no longer distributed
 
-```bash
-docker pull ghcr.io/adonisphusis/pna-lp:latest
-
-docker run -d \
-  -p 8080:8080 \
-  -v ~/.BathronKey:/root/.BathronKey:ro \
-  -v ~/bathron/bin/bathron-cli:/usr/local/bin/bathron-cli:ro \
-  -v ~/bitcoin/bin/bitcoin-cli:/usr/local/bin/bitcoin-cli:ro \
-  -v ~/.bathron:/root/.bathron \
-  -v ~/.bitcoin-signet:/root/.bitcoin-signet:ro \
-  -e LP_ID=lp_pna_01 \
-  -e LP_NAME="pna LP" \
-  ghcr.io/adonisphusis/pna-lp:latest
-```
+The historical container image of this prototype is no longer distributed or supported. Build
+from the `Dockerfile` in this directory if you need a container; there is no supported registry.
 
 ## Key Setup
 

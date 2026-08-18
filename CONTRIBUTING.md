@@ -1,11 +1,12 @@
 # Contributing to BATHRON
 
-BATHRON is an experimental settlement kernel for Bitcoin, currently in its
-public-testnet phase. Development happens in a private source-of-truth
-repository; this public repository is a filtered mirror that is
-force-synchronized on every publication — **pull requests against the mirror
-cannot be merged directly**, but they are read, and accepted changes are
-applied upstream and credited.
+BATHRON is an open settlement protocol for Bitcoin, currently on a public
+testnet (see <https://bathron.org/docs/consensus/status-and-claims.html>).
+This public repository is the reference implementation, populated by a
+controlled export (each publication is a flat commit with a `.PROVENANCE.txt`
+carrying the source commit id and tree hash). **Pull requests against it cannot
+be merged directly** — the next export would overwrite them — but they are
+read, and accepted changes are applied upstream and credited.
 
 ## How to contribute today
 

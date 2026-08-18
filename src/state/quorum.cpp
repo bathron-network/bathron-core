@@ -161,7 +161,9 @@ int HuVrfFinalityThreshold(int E)
 int HuActiveFinalityThreshold(const Consensus::Params& consensus, int nOperators)
 {
     // Auto-scaling committee: the EFFECTIVE committee is min(E, N), where E is the fixed
-    // expected-committee CAP (nHuExpectedCommitteeSize) and N = nOperators is the unique
+    // EXPECTED committee size (nHuExpectedCommitteeSize — a target, not a hard cap: when
+    // N > E each operator is drawn with p = E/N, so the realised size varies around E) and
+    // N = nOperators is the unique
     // operator count AT the block (resolved deterministically by the caller from that
     // block's MN list — the same N the VRF selection uses, see GetUniqueOperators).
     //   N <= E → the whole operator population participates (small / bootstrap network);

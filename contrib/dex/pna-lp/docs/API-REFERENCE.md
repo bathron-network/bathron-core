@@ -1,5 +1,7 @@
 # P&A LP API Reference
 
+> Prototype API of the previous signet-era testnet demonstrator (not currently deployed). Canonical documentation: <https://bathron.org/docs/>.
+
 Base URL: `http://<LP_IP>:8080`
 
 Interactive docs: `http://<LP_IP>:8080/docs` (Swagger UI)

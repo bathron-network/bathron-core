@@ -1,10 +1,12 @@
 # P&A LP Architecture
 
-> **Target model / operating objective:** maintained in the core repository's
-> design docs (trustless + permissionless atomic settlement; no custodian, no
-> oracle, no slashing). This file describes the *current* implementation, which
-> still contains legacy paths (marked below) that are **not** part of the
-> objective.
+> **Target model / operating objective:** described only in the canonical documentation —
+> <https://bathron.org/docs/markets/quotes-off-chain.html> (quotes off-chain, settlement
+> on-chain), <https://bathron.org/docs/markets/native-btc-pair.html> (paired hashlocked legs;
+> what is and is not demonstrated) and <https://bathron.org/docs/consensus/status-and-claims.html>.
+> This file describes the *current* implementation of this prototype (built for the previous
+> signet-era testnet), which still contains legacy paths (marked below) that are **not** part
+> of the objective. It makes no claim about the network's capabilities.
 
 ## Current Structure
 

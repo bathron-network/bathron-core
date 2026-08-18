@@ -1,8 +1,8 @@
 {
-  "exporter_version":"2.0",
-  "source_commit":"013e3d4458f3c1e24b141ecc6dddfef95590863d",
-  "utc":"2026-08-12T00:05:00Z",
-  "tree_sha256":"3c71eb4a473e8027c5f94f21f533299942390e7971ca86c88539a82e31599bcc",
+  "exporter_version":"2.1",
+  "source_commit":"fb81f625aaa9f441c8a71471922f112ef696fea9",
+  "utc":"2026-08-18T19:55:47Z",
+  "tree_sha256":"eff2f64f16c6077281dd1a4475973cb5c434d0d735903e860ab325bb08293a4d",
   "file_count":1307,
   "result":"PASS",
   "checks":[
@@ -16,6 +16,7 @@
     {"check":"licenses","result":"pass","hits":[]},
     {"check":"no_doc_public","result":"pass","hits":[]},
     {"check":"canonical_doc_link","result":"pass","hits":[]},
+    {"check":"no_private_repo_name","result":"pass","hits":[]},
     {"check":"readme_genesis_matches_code","result":"pass","hits":[]}
   ]
 }

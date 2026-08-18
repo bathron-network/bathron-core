@@ -102,7 +102,8 @@ struct Params {
                                     // seed (mainnet 6 / testnet 3 / regtest 1). Seed of
                                     // block H = hash(H-k) instead of hash(H-1): breaks the
                                     // production/finality double-lever (see quorum.h).
-    int nHuExpectedCommitteeSize;   // E: VRF finality-committee CAP (1-op-1-vote, p=E/N). VRF-only,
+    int nHuExpectedCommitteeSize;   // E: EXPECTED VRF finality-committee size (target, not a hard cap;
+                                    // 1-op-1-vote, p=E/N so the realised size varies around E). VRF-only,
                                     // wired. Threshold = ceil(2/3*min(E,N)). mainnet=testnet 128 / regtest 1.
 
     // DMM leader timeout
