@@ -135,7 +135,8 @@ int HuVrfFinalityThreshold(int E);
  * unique operators in its MN list.
  *
  * Single source of truth: threshold = ceil(2/3 · min(E, nOperators)), where E =
- * consensus.nHuExpectedCommitteeSize is the fixed expected-committee CAP. The min()
+ * consensus.nHuExpectedCommitteeSize is the fixed EXPECTED committee size (a target the
+ * VRF sample varies around when N > E — not a hard cap on the realised size). The min()
  * makes ONE fixed E auto-scale across network sizes:
  *   - nOperators <= E → whole population (small / bootstrap network);
  *   - nOperators >  E → VRF sortition samples ~E (large network), threshold ~2/3·E.

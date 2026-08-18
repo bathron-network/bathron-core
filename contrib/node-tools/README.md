@@ -1,19 +1,33 @@
 # BATHRON Node Tools
 
-Permissionless tools for BATHRON node operators. Anyone can run these daemons to strengthen the network.
+Tools for BATHRON node operators. Anyone running a node can run these daemons — header
+publication and burn-claim submission are open to any node (`publishbtcheaders`,
+`submitburnclaim`); no permission or registration is involved.
 
-## Why Run These?
+> **Network:** the current measurement network reads **Bitcoin testnet4**. The two daemons below
+> default to a testnet4 Bitcoin Core (`~/.bitcoin-testnet4`). What the network can and cannot do
+> today is documented once, canonically: <https://bathron.org/docs/consensus/status-and-claims.html>.
+> How Bitcoin facts enter consensus: <https://bathron.org/docs/bitcoin/facts-in-consensus.html>.
 
-Today, a single node publishes BTC headers and processes burn claims. That's a centralization risk. By running these tools, you:
+## Why run these?
 
-- **Decentralize SPV header publication** - more publishers = more resilient consensus
-- **Decentralize burn claim processing** - anyone can claim burns for anyone (credits go to the address in the burn metadata, not the submitter)
+- **More SPV header publishers** — any node can carry Bitcoin headers into consensus; more
+  independent publishers means less reliance on any single one.
+- **More burn-claim submitters** — anyone can claim a burn for anyone (credits go to the address
+  in the burn metadata, never to the submitter).
 
 ## Tools
 
-### burn_signet.sh
+### burn_signet.sh — historical (previous testnet only)
 
-Burn BTC on Signet to mint M0BTC on BATHRON testnet. One command, fully automated.
+> ⚠️ **Do not use on the current network.** This script burns on Bitcoin **signet**, which was the
+> Bitcoin source of the *previous* public testnet. The current measurement network reads
+> **testnet4**: a signet burn is **not** visible to it and mints nothing. The script is kept for
+> reference only; a testnet4 equivalent is not shipped in this directory. Burn format and
+> destination script are documented canonically at
+> <https://bathron.org/docs/reference/spv.html#burn-format-bcs-v10>.
+
+Historical usage (signet-era testnet):
 
 ```bash
 ./burn_signet.sh <bathron_address> <amount_sats>
@@ -29,11 +43,11 @@ The script:
 4. Verifies BP08 compliance before broadcast
 5. Broadcasts and saves burn info for tracking
 
-**Burn address (Signet):** `tb1qdc6qh88lkdaf3899gnntk7q293ufq8flkvmnsa59zx3sv9a05qwsdh5h09`
+**Burn output (P2WSH of the canonical burn script, `tb1…` on both signet and testnet4):** `tb1qdc6qh88lkdaf3899gnntk7q293ufq8flkvmnsa59zx3sv9a05qwsdh5h09`
 
 After broadcast, the burn claim daemon (or anyone running it) will detect the burn, submit `TX_BURN_CLAIM`, and M0BTC will be minted automatically after K=6 confirmations.
 
-**Min burn:** 1,000 sats | **Faucets:** [signetfaucet.com](https://signetfaucet.com) | [alt.signetfaucet.com](https://alt.signetfaucet.com)
+**Min burn:** 1,000 sats (signet-era parameters).
 
 ### btc_header_daemon.sh
 
@@ -62,7 +76,7 @@ BTC Node --> [scan for burns] --> [check if claimed] --> submitburnclaimproof
 
 ## Requirements
 
-- **Bitcoin Core** (Signet for testnet, Mainnet for production) with `txindex=1`
+- **Bitcoin Core** with `txindex=1` — **testnet4** for the current measurement network (there is no mainnet)
 - **bathrond** running and synced
 - `bitcoin-cli` and `bathron-cli` accessible
 - `jq` installed
@@ -72,7 +86,7 @@ BTC Node --> [scan for burns] --> [check if claimed] --> submitburnclaimproof
 ```bash
 # 1. Configure paths (or use defaults)
 export BTC_CLI=/path/to/bitcoin-cli
-export BTC_DATADIR=/path/to/.bitcoin-signet
+export BTC_DATADIR=/path/to/.bitcoin-testnet4
 export BATHRON_CLI=/path/to/bathron-cli
 
 # 2. Start BTC header sync
@@ -92,8 +106,8 @@ All configuration via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BTC_CLI` | `~/bitcoin-27.0/bin/bitcoin-cli` | Path to bitcoin-cli |
-| `BTC_DATADIR` | `~/.bitcoin-signet` | Bitcoin data directory |
+| `BTC_CLI` | `~/bitcoin-28.1/bin/bitcoin-cli` | Path to bitcoin-cli |
+| `BTC_DATADIR` | `~/.bitcoin-testnet4` | Bitcoin data directory |
 | `BTC_CONF` | `$BTC_DATADIR/bitcoin.conf` | Bitcoin config file |
 | `BATHRON_CLI` | `~/bathron-cli` | Path to bathron-cli |
 | `INTERVAL` | `120` (headers) / `300` (burns) | Poll interval in seconds |

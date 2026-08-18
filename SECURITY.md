@@ -60,13 +60,12 @@ There is **no monetary reward program** at this time. We will not promise a boun
 not exist. Recognition (credit in release notes / this file) is offered for valid,
 responsibly-disclosed reports.
 
-## Known limitations (stated up front)
+## Known limitations
 
-- No external security audit has been completed. Internal adversarial audits exist but do not
-  substitute for independent review.
-- On the open testnet, low-cost Sybil identities can stall block finality (liveness only — the
-  monetary invariants hold regardless; the network is resettable). This is a documented,
-  accepted property of the experimental phase, not an accepted report target.
-- The conditional-settlement guarantee ("settled per quote or refunded by timeout") is a
-  design objective whose complete cross-chain safety model is **not yet formally specified or
-  externally reviewed**.
+The public statement of what is and is not proven — no external audit yet, the operator set
+project-run, the open-network Sybil analysis, the unreviewed cross-chain settlement state
+machine — is maintained in one place and not duplicated here:
+<https://bathron.org/docs/consensus/status-and-claims.html>. The threat model itself is
+<https://bathron.org/docs/consensus/security-model.html>. Denial-of-service that merely stalls
+finality on the *experimental* testnet is a documented, accepted property of this phase, not
+an accepted report target.

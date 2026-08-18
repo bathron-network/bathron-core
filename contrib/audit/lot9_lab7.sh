@@ -5,7 +5,7 @@
 #
 # Stands up SEVEN regtest bathrond processes on loopback with disposable
 # credentials, drives them at the REAL public consensus parameters (finality
-# floor 4, committee cap E=128, anchored schedule) and measures the LOT 9
+# floor 4, expected committee size E=128, anchored schedule) and measures the LOT 9
 # properties end to end.
 #
 # NEVER touches the public fleet: dnsseed/discover/upnp/natpmp/onion are all off

@@ -318,7 +318,7 @@ public:
         consensus.nHuQuorumSize = 4;                // Sybil floor: min distinct OPERATORS to finalize. 4 = textbook 3f+1 (tolerates 1 fault: 1 down → 3 vote → 3>=ceil(2/3*4)). No producer exclusion, so the full N votes. Must be <= operator count at launch.
         consensus.nHuFinalityLagWarning = 12;       // Diagnostic: lag > 12 blocks → "lagging" (2x → critical)
         consensus.nHuFinalitySeedOffset = 6;        // Finality seed = hash(H-6) (anti double-lever)
-        consensus.nHuExpectedCommitteeSize = 128;   // E = VRF committee CAP. Threshold = ceil(2/3·min(E,N)): N<=E whole population, N>E sampled ~E. One fixed E scales few→thousands of operators with no retuning.
+        consensus.nHuExpectedCommitteeSize = 128;   // E = EXPECTED VRF committee size (target, not a hard cap). Threshold = ceil(2/3·min(E,N)): N<=E whole population, N>E sampled ~E (realised size varies). One fixed E scales few→thousands of operators with no retuning.
         consensus.nHuLeaderTimeoutSeconds = 45;     // DMM leader timeout (fallback after 45s)
         consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= FutureBlockTimeDrift(14)+15=29. Was 15 => a 1-second margin, too fragile for a consensus liveness rule.
         consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)
@@ -497,7 +497,7 @@ public:
         consensus.nHuQuorumSize = 4;                // UNIFIED with mainnet (3f+1): testnet must mirror what mainnet ships. Requires >=4 distinct operators on the test fleet.
         consensus.nHuFinalityLagWarning = 3;        // Diagnostic: lag > 3 blocks → "lagging" (2x → critical)
         consensus.nHuFinalitySeedOffset = 3;        // Finality seed = hash(H-3) (anti double-lever)
-        consensus.nHuExpectedCommitteeSize = 128;   // E = VRF committee CAP (same as mainnet). Threshold = ceil(2/3·min(E,N)); at N=3 today → min=3 → 2/3 (auto-scales as operators join)
+        consensus.nHuExpectedCommitteeSize = 128;   // E = EXPECTED VRF committee size (same as mainnet; target, not a hard cap). Threshold = ceil(2/3·min(E,N)) — but below the Sybil floor nHuQuorumSize=4 the threshold is UNREACHABLE (N=3 does NOT finalize; ≥4 distinct operators required)
         consensus.nHuLeaderTimeoutSeconds = 45;     // Leader timeout (was 30, increased for reliability)
         consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= FutureBlockTimeDrift(14)+15=29 (was 15, margin of 1 s).
         consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)
@@ -671,7 +671,7 @@ public:
         consensus.nHuQuorumSize = 1;                // Single MN quorum
         consensus.nHuFinalityLagWarning = 1;        // Diagnostic: any lag → "lagging" (regtest)
         consensus.nHuFinalitySeedOffset = 1;        // Finality seed = hash(H-1) (single-MN regtest, no-op)
-        consensus.nHuExpectedCommitteeSize = 1;     // E = VRF committee CAP (regtest: single MN)
+        consensus.nHuExpectedCommitteeSize = 1;     // E = expected VRF committee size (regtest: single MN)
         consensus.nHuLeaderTimeoutSeconds = 45;     // LOT 9 M1 invariant I1: >= FutureBlockTimeDrift(14)+15. NO regtest shortcut — a 5 s timeout made slot 1 free (drift 14 > 5); tests drive time with mocktime instead.
         consensus.nHuFallbackRecoverySeconds = 30;  // LOT 9 M1 invariant I2: >= drift(14)+15. Was 2 s => 7 FREE slots on regtest.
         consensus.nOperatorLeaseBlocks = 10080;     // LOT 9 M3: lease horizon ~7 days at 60 s; expiry = inclusionHeight + this (consensus-derived, never user-supplied)

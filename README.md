@@ -1,34 +1,32 @@
 # BATHRON
 
-> **An experimental settlement kernel for Bitcoin.** Public testnet, no mainnet, no proven market.
+> **An open settlement protocol. Bitcoin remains the final asset.** Public testnet, no mainnet, no
+> proven market — see [Status & claims](https://bathron.org/docs/consensus/status-and-claims.html).
 
-BATHRON is a functional testnet for conditional Bitcoin settlement: covenants, Bitcoin-header
-verification in consensus, confidential internal transfers and fast finality, so applications can
-coordinate two settlement legs without giving one intermediary unrestricted custody. It has no
-token sale, premine, block reward, treasury or yield, and its internal units are neither an
-investment nor a redeemable claim on Bitcoin.
+This repository holds the **node, build files and `SECURITY.md`**. It does not restate the
+protocol's positioning, economics, security model or status: those have exactly one canonical
+source, and this README links to it.
 
-This repository holds the **node, build files and `SECURITY.md`**. All conceptual documentation
-lives in one canonical place — this README does not duplicate it:
-
-- 📖 **Documentation:** <https://bathron.org/docs/>
+- 📖 **Documentation (canonical):** <https://bathron.org/docs/> — start with
+  [Start here](https://bathron.org/docs/start-here.html)
 - 📖 **Documentation source:** <https://github.com/bathron-network/bathron-network.github.io/tree/main/docs/src>
-- 🔒 **Security model:** <https://bathron.org/docs/learn/security-model.html> · report privately to security@bathron.org (see [`SECURITY.md`](SECURITY.md))
-- 🧠 **Consensus & finality:** <https://bathron.org/docs/learn/consensus.html>
-- 🚀 **Run a peer node:** <https://bathron.org/docs/getting-started/run-a-node.html>
+  ([documentation policy](https://bathron.org/docs/reference/documentation-policy.html))
+- 📊 **Status & claims** — what runs, what is not proven, what is never claimed:
+  <https://bathron.org/docs/consensus/status-and-claims.html>
+- 🔒 **Security model:** <https://bathron.org/docs/consensus/security-model.html> · report
+  privately to security@bathron.org (see [`SECURITY.md`](SECURITY.md))
+- 🧠 **Consensus & finality:** <https://bathron.org/docs/consensus/production-and-finality.html>
+- 🚀 **Run a peer node:** <https://bathron.org/docs/operate/run-a-node.html>
 - 📦 **Releases:** <https://github.com/bathron-network/bathron-core/releases>
 
 ## ⚠️ Experimental
 
 This is experimental software running a **measurement network with a disposable genesis**. There is
-no mainnet, and the complete cross-chain safety model is not yet formally specified or externally
-reviewed. Do not treat the internal units (M0/M1) as an investment or a redeemable claim on Bitcoin.
-
-The current network exists to **measure** the consensus under real conditions, not to serve users.
-Its operator set is closed while the open-admission threat model is still being worked out, so
-anyone can run a **peer node** and verify the chain, but operator registration is not open. The
-Bitcoin source for burn verification is **Testnet4**, which proves the burn→claim→mint flow — not
-mainnet-equivalent economic security.
+no mainnet. Anyone can run a **peer node** and verify the chain; **operator registration is not
+open** while the open-admission threat model is worked. The Bitcoin source read by consensus is
+**Bitcoin testnet4**. Everything else about what is and is not proven is on the
+[Status & claims](https://bathron.org/docs/consensus/status-and-claims.html) page — this file
+does not repeat it.
 
 ## Build
 
@@ -43,7 +41,7 @@ make -j$(nproc)
 ```
 
 This produces `src/bathrond` (daemon) and `src/bathron-cli` (RPC client). macOS instructions and
-release binaries: <https://bathron.org/docs/getting-started/run-a-node.html>.
+release binaries: <https://bathron.org/docs/operate/run-a-node.html>.
 
 ## Run a peer node on the measurement network
 
@@ -67,5 +65,6 @@ Verify that the genesis hash above matches before trusting any peer.
 
 ---
 
-*One canonical documentation source. Everything else links to it — see
-<https://bathron.org/docs/>.*
+*One canonical documentation source — <https://bathron.org/docs/>. Where this README and the
+documentation disagree on a claimed capability, the documentation's
+[Status & claims](https://bathron.org/docs/consensus/status-and-claims.html) page prevails.*
