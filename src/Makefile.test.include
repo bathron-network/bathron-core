@@ -82,7 +82,8 @@ BITCOIN_TEST_SUITE = \
   test/librust/utiltest.h \
   test/librust/utiltest.cpp \
   test/util/mn_finality_setup.h \
-  test/util/mn_finality_setup.cpp
+  test/util/mn_finality_setup.cpp \
+  test/util/lab_wallet_testdir.h
 
 if ENABLE_WALLET
 BITCOIN_TEST_SUITE += \
@@ -187,6 +188,8 @@ BITCOIN_TESTS =\
   test/script_standard_tests.cpp \
   test/serialize_tests.cpp \
   test/sighash_tests.cpp \
+  test/amount_m0_interface_tests.cpp \
+  test/libevent_version_tests.cpp \
   test/sigopcount_tests.cpp \
   test/skiplist_tests.cpp \
   test/sync_tests.cpp \
@@ -225,7 +228,8 @@ SAPLING_TESTS =\
 if ENABLE_WALLET
 BITCOIN_TESTS += \
   wallet/test/wallet_tests.cpp \
-  wallet/test/crypto_tests.cpp
+  wallet/test/crypto_tests.cpp \
+  wallet/test/sqlite_init_tests.cpp
 
 SAPLING_TESTS +=\
   test/librust/sapling_rpc_wallet_tests.cpp \
@@ -558,7 +562,28 @@ check-standard: $(BITCOIN_TESTS:.cpp=.cpp.test)
 	$(PYTHON) $(top_builddir)/test/util/bitcoin-util-test.py
 	@echo "Running test/util/rpcauth-test.py..."
 	$(PYTHON) $(top_builddir)/test/util/rpcauth-test.py
-	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C chiabls check
+# LAB-CHECK-STANDARD-CHIABLS-1 — récursion orpheline retirée.
+#
+# check-standard récursait dans `chiabls`, qui n'existe pas :
+#
+#   make: *** chiabls: No such file or directory.  Stop.
+#
+# Établi avant retrait :
+#   - src/chiabls n'a JAMAIS existé dans ce dépôt : 0 entrée suivie, 0 commit le touchant,
+#     aucun gitlink, aucun .gitmodules ;
+#   - aucune référence à chiabls, LIBBLS ou libbls dans configure.ac ni Makefile.am ;
+#   - aucun #include ni appel BLS dans src/ ;
+#   - aucun symbole BLS, défini ou indéfini, dans bathrond, bathron-tx ou test_bathron ;
+#   - les clés opérateur de masternode sont des CPubKey secp256k1
+#     (masternode/providertx.h:32,110), pas des clés BLS.
+#
+# BATHRON n'utilise pas BLS. La ligne est un reliquat textuel de la lignée amont, où
+# chiabls est un subtree fournissant les clés BLS de masternode. Les seules récursions
+# légitimes sont secp256k1 et univalue, toutes deux suivies et déclarées dans
+# DIST_SUBDIRS (Makefile.am:5) — chiabls n'y figure pas, ce qui confirme le diagnostic.
+#
+# Aucun répertoire vide n'est créé pour satisfaire make, et aucune condition
+# « si le dossier existe » n'est introduite : la récursion est simplement supprimée.
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C secp256k1 check
 if EMBEDDED_UNIVALUE
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C univalue check
@@ -568,9 +593,27 @@ check-sapling: $(SAPLING_TESTS:.cpp=.cpp.test)
 
 check-local: check-sapling check-standard
 
+# LAB-TEST-HARNESS-FILTER-1
+#
+# Extraction des noms de suites d'un fichier de test, joints par des VIRGULES.
+#
+# La version d'origine passait la sortie brute de grep à -t, c'est-à-dire des noms
+# séparés par des sauts de ligne (0x0a). Boost.Test attend une liste séparée par des
+# virgules et rejette la forme obtenue :
+#
+#     Test setup error: no test cases matching filter or all test cases were disabled
+#
+# Le fichier n'était alors PAS testé, et make s'arrêtait. 11 des 137 fichiers de test de
+# cet arbre déclarent plusieurs suites (jusqu'à 22 pour consensus_p0_atomicity_tests.cpp),
+# donc le défaut n'était pas propre à un fichier : il touchait tout fichier multi-suites.
+#
+# `paste -sd, -` est POSIX, présent sur BSD comme sur GNU, et préserve l'ordre de grep,
+# lui-même l'ordre du fichier : le filtre produit est déterministe.
+BOOST_SUITE_FILTER = grep -E "(BOOST_FIXTURE_TEST_SUITE\\(|BOOST_AUTO_TEST_SUITE\\()" $< | cut -d '(' -f 2 | cut -d ',' -f 1 | cut -d ')' -f 1 | paste -sd, -
+
 %.cpp.test: %.cpp
-	@echo Running tests: `cat $< | grep -E "(BOOST_FIXTURE_TEST_SUITE\\(|BOOST_AUTO_TEST_SUITE\\()" | cut -d '(' -f 2 | cut -d ',' -f 1 | cut -d ')' -f 1` from $<
-	$(AM_V_at)$(TEST_BINARY) -l test_suite -t "`cat $< | grep -E "(BOOST_FIXTURE_TEST_SUITE\\(|BOOST_AUTO_TEST_SUITE\\()" | cut -d '(' -f 2 | cut -d ',' -f 1 | cut -d ')' -f 1`" > $<.log 2>&1 || (cat $<.log && false)
+	@echo Running tests: `$(BOOST_SUITE_FILTER)` from $<
+	$(AM_V_at)$(TEST_BINARY) -l test_suite -t "`$(BOOST_SUITE_FILTER)`" > $<.log 2>&1 || (cat $<.log && false)
 
 %.json.h: %.json
 	@$(MKDIR_P) $(@D)

@@ -14,6 +14,7 @@
 #include "sync.h"
 #include "guiinterface.h"
 #include "util/system.h"
+#include "utilmoneystr.h"
 #include "utilstrencodings.h"
 
 #ifdef ENABLE_WALLET
@@ -116,20 +117,24 @@ void RPCTypeCheckObj(const UniValue& o,
 CAmount AmountFromValue(const UniValue& value)
 {
     // BATHRON: 1 M0 = 1 satoshi, accept raw integer (no BTC conversion)
+    //
+    // LAB-BATHRON-TX-AMOUNT-COHERENCE-1 — aligné sur la primitive canonique.
+    // Auparavant, cette fonction avait sa propre analyse (get_int64 pour un nombre,
+    // std::stoll pour une chaîne) tandis que bathron-tx.cpp en avait une troisième,
+    // restée en BTC. Les trois chemins passent maintenant par ParseMoney(), seul
+    // analyseur de montant d'interface du projet.
+    //
+    // Écarts de comportement corrigés au passage :
+    //   - std::stoll acceptait un préfixe numérique et ignorait la suite : "12abc" donnait
+    //     12. ParseMoney rejette la chaîne entière.
+    //   - get_int64 acceptait un négatif que MoneyRange refusait ensuite ; ParseMoney le
+    //     refuse d'emblée. Le résultat final est identique, le message est plus juste.
     if (!value.isNum() && !value.isStr())
         throw JSONRPCError(RPC_TYPE_ERROR, "Amount is not a number or string");
 
     CAmount nAmount;
-    if (value.isNum()) {
-        nAmount = value.get_int64();
-    } else {
-        // Parse string as integer (satoshis)
-        try {
-            nAmount = std::stoll(value.getValStr());
-        } catch (const std::exception&) {
-            throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount (must be integer satoshis)");
-        }
-    }
+    if (!ParseMoney(value.getValStr(), nAmount))
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount (must be an integer in minimal units)");
 
     if (!Params().GetConsensus().MoneyRange(nAmount))
         throw JSONRPCError(RPC_TYPE_ERROR, "Amount out of range");
