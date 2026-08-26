@@ -5,6 +5,8 @@
 
 #include "wallet/test/wallet_test_fixture.h"
 
+#include "test/util/lab_wallet_testdir.h"
+
 #include "sapling/sapling_util.h"
 #include "sapling/address.h"
 #include "wallet/wallet.h"
@@ -132,7 +134,22 @@ BOOST_FIXTURE_TEST_CASE(StoreAndLoadSaplingZkeys, TestingSetup) {
   * This test covers methods on WalletBatch to load/save crypted sapling z keys.
   */
 BOOST_FIXTURE_TEST_CASE(WriteCryptedSaplingZkeyDirectToDb, BasicTestingSetup) {
-    fs::path path = fs::absolute("testWallet1", GetWalletDir());
+    // LAB-WALLET-TEST-ISOLATION-1
+    //
+    // Auparavant : fs::absolute("testWallet1", GetWalletDir()).
+    // Sans redirection de -datadir, GetWalletDir() retombe sur le datadir de PRODUCTION
+    // et ce cas y créait "wallets/testWallet1/wallet.sqlite", qu'il laissait en place.
+    // Il n'était donc pas idempotent : au second passage il retrouvait son propre wallet
+    // et échouait sur « check !testWallet->HasSaplingSPKM() has failed ».
+    //
+    // Il ne s'isolait que par accident lorsque la suite entière tournait : la fixture
+    // TestingSetup du cas précédent avait redirigé -datadir, et gArgs étant global, ce
+    // cas en héritait. Exécuté seul, l'isolation disparaissait.
+    //
+    // La redirection est maintenant explicite, vérifiée fail-closed, et propre à ce cas.
+    // Seul l'EMPLACEMENT du wallet change ; la logique testée est inchangée.
+    fs::path path = fs::absolute("testWallet1",
+                                 lab_test::SetupIsolatedWalletDir(*this, "wallet_zkeys_tests"));
     path.make_preferred();
     std::unique_ptr<CWallet> testWallet = std::make_unique<CWallet>("testWallet1", WalletDatabase::Create(path));
     bool fFirstRun;
