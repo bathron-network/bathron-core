@@ -74,6 +74,39 @@ std::ostream& operator<<(std::ostream& os, const uint256& num)
 BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
     : m_path_root{fs::temp_directory_path() / "test_bathron" / std::to_string(g_insecure_rand_ctx_temp_path.rand32())}
 {
+    // LAB-TEST-DATADIR-EARLY-ISOLATION-1
+    //
+    // La racine temporaire est installée AVANT toute autre chose. C'est le point commun le
+    // plus précoce : rien dans ce constructeur, ni dans les fixtures dérivées, ni dans le
+    // code testé, ne peut alors matérialiser le datadir de production.
+    //
+    // Sans cela, 22 suites sur 174 créaient des répertoires dans le HOME de l'opérateur.
+    // Deux mécanismes, tous deux en amont de la redirection que TestingSetup faisait dans
+    // SON corps, donc trop tard :
+    //
+    //   1. GetDefaultDataDir() (util/system.cpp:562-563) fait, sur macOS,
+    //      TryCreateDirectories("$HOME/Library/Application Support") avant même de
+    //      retourner le chemin. Le simple fait de l'appeler crée ce répertoire.
+    //   2. GetDataDir() (util/system.cpp:758-760) fait create_directories(path) puis
+    //      create_directories(path/"wallets"), matérialisant
+    //      $HOME/Library/Application Support/BATHRON/<réseau>/wallets.
+    //
+    // GetDataDir n'appelle GetDefaultDataDir QUE si -datadir est vide (ligne 745-753), et
+    // exige que le chemin existe déjà (ligne 748). D'où l'ordre ici : créer la racine,
+    // puis forcer -datadir, puis purger le cache — ClearDatadirCache est indispensable car
+    // GetDataDir mémorise sa résolution (ligne 743) et un appel antérieur dans le
+    // processus aurait figé le chemin de production.
+    //
+    // Aucune logique wallet n'est nécessaire : TestnetSetup et les fixtures de règlement
+    // sont protégées par ce seul point, sans rien connaître du wallet. TestingSetup
+    // continue d'appeler SetDataDir("tempdir"), qui reste sous m_path_root.
+    //
+    // Le nettoyage reste celui du destructeur : fs::remove_all(m_path_root), sur cette
+    // seule racine.
+    fs::create_directories(m_path_root);
+    gArgs.ForceSetArg("-datadir", m_path_root.string());
+    ClearDatadirCache();
+
     ECC_Start();
     SetupEnvironment();
     InitSignatureCache();

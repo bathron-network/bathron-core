@@ -323,11 +323,27 @@ BOOST_FIXTURE_TEST_CASE(transition_four_to_three_new_block_should_not_finalize, 
     }
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOT 4 — SENTINEL CONTAINMENT (regression guard for the review's F2/F3)
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// LAB-FINALITY-SUBFLOOR-REGISTRATION-1 — ces deux cas étaient déclarés APRÈS
+// BOOST_AUTO_TEST_SUITE_END(), donc au niveau du module et hors de toute suite.
+//
+// La règle %.cpp.test de src/Makefile.test.include construit son filtre à partir des
+// seuls noms de SUITE trouvés dans le fichier. Le filtre produit ici est
+// `-t hu_finality_subfloor_tests`, et Boost répondait alors :
+//
+//     Test case "unival_null_is_json_null_not_zero" is skipped because disabled
+//     Test case "floor_predicate_identifies_the_unreachable_sentinel" is skipped because disabled
+//
+// 6 cas entrés sur 8. Ces deux gardes n'ont donc JAMAIS été exécutées par make check —
+// alors qu'elles existent précisément parce qu'une mutation d'un relecteur avait survécu
+// à toute la suite. La garde était elle-même inerte.
+//
+// Seule la position du marqueur de fin de suite change : les deux cas conservent leur
+// fixture, leurs assertions et leur logique à l'identique. BOOST_FIXTURE_TEST_CASE porte
+// sa propre fixture, indépendante de celle des autres cas de la suite.
 //
 // The floor makes HuActiveFinalityThreshold return HU_FINALITY_THRESHOLD_UNREACHABLE
 // (INT_MAX) below nHuQuorumSize. That value is INTERNAL and must never surface to an
@@ -382,3 +398,5 @@ BOOST_FIXTURE_TEST_CASE(floor_predicate_identifies_the_unreachable_sentinel, Tes
     BOOST_CHECK_EQUAL(hu::HuActiveFinalityThreshold(consensus, 0),
                       hu::HuVrfFinalityThreshold(consensus.nHuExpectedCommitteeSize));
 }
+
+BOOST_AUTO_TEST_SUITE_END()

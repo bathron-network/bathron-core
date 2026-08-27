@@ -22,6 +22,34 @@
 namespace {
 RecursiveMutex cs_db;
 std::map<std::string, SQLiteDatabase*> g_databases; //!< Map from directory name to database
+
+//! Process-level SQLite initialisation.
+//!
+//! depends builds SQLite with -DSQLITE_OMIT_AUTOINIT (see depends/packages/sqlite.mk),
+//! which removes the implicit sqlite3_initialize() that sqlite3_open*() would otherwise
+//! perform. sqlite3.h is explicit about the consequence: "the application must call
+//! sqlite3_initialize() directly prior to using any other SQLite interface". Without it,
+//! sqlite3GlobalConfig.m.xMalloc is still null and the first allocation inside
+//! openDatabase() jumps to address 0.
+//!
+//! Called from the only two entry points that can be the first SQLite use in a process:
+//! the SQLiteDatabase constructor and the static SQLiteBatch::VerifyDatabaseFile.
+//!
+//! Thread safety comes from two independent guarantees: sqlite3_initialize() is itself
+//! documented as threadsafe, and C++11 [stmt.dcl]/4 makes the initialisation of a
+//! function-local static thread-safe and exactly-once for the process lifetime.
+//!
+//! No matching sqlite3_shutdown() is installed. sqlite3.h requires that shutdown run on a
+//! single thread with every connection closed and every SQLite resource released first.
+//! SQLiteDatabase instances are owned by CWallet and tracked in g_databases above; their
+//! destruction order relative to any shutdown hook is not established anywhere in this
+//! tree, so a mis-ordered shutdown would be a worse defect than the one being fixed.
+//! Letting the process exit reclaim SQLite's resources is the safe choice here.
+int EnsureSQLiteInitialized()
+{
+    static const int rc = sqlite3_initialize();
+    return rc;
+}
 } // namespace
 
 SQLiteDatabase* GetWalletDatabase(const fs::path& wallet_path, std::string& database_filename)
@@ -49,6 +77,11 @@ SQLiteDatabase* GetWalletDatabase(const fs::path& wallet_path, std::string& data
 SQLiteDatabase::SQLiteDatabase(const fs::path& wallet_path, bool mock)
     : nUpdateCounter(0), nLastSeen(0), nLastFlushed(0), nLastWalletUpdate(0), m_mock(mock)
 {
+    const int init_rc = EnsureSQLiteInitialized();
+    if (init_rc != SQLITE_OK) {
+        throw std::runtime_error(strprintf("SQLiteDatabase: Failed to initialize SQLite: %s", sqlite3_errstr(init_rc)));
+    }
+
     if (mock) {
         // In-memory database for testing
         int rc = sqlite3_open(":memory:", &m_db);
@@ -461,6 +494,12 @@ bool SQLiteBatch::VerifyDatabaseFile(const fs::path& file_path, std::string& war
     if (!fs::exists(walletFile)) {
         // File doesn't exist yet, that's fine
         return true;
+    }
+
+    const int init_rc = EnsureSQLiteInitialized();
+    if (init_rc != SQLITE_OK) {
+        errorStr = strprintf("Cannot initialize SQLite: %s", sqlite3_errstr(init_rc));
+        return false;
     }
 
     // Try to open and verify
