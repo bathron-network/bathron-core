@@ -1,8 +1,16 @@
 package=libevent
-$(package)_version=2.1.8-stable
+# 2.1.12-stable (amont) — REQUIS sur toute libc qui fournit arc4random SANS
+# arc4random_addrandom (glibc >= 2.36). En 2.1.8 l'appel a arc4random_addrandom()
+# dans evutil_rand.c n'est pas garde : la compilation echoue (GCC >= 14 traite la
+# declaration implicite comme une erreur) et l'edition de liens echouerait de toute
+# facon, le symbole etant absent de la glibc. La 2.1.12 amont garde l'appel :
+#   evutil_rand.c:193
+#   #if !defined(EVENT__HAVE_ARC4RANDOM) || defined(EVENT__HAVE_ARC4RANDOM_ADDRANDOM)
+# Correction AMONT, aucun patch local. Garde de regression : src/test/libevent_version_tests.cpp
+$(package)_version=2.1.12-stable
 $(package)_download_path=https://github.com/libevent/libevent/archive/
 $(package)_file_name=release-$($(package)_version).tar.gz
-$(package)_sha256_hash=316ddb401745ac5d222d7c529ef1eada12f58f6376a66c1118eee803cb70f83d
+$(package)_sha256_hash=7180a979aaa7000e1264da484f712d403fcf7679b1e9212c4e3d09f5c93efc24
 
 define $(package)_preprocess_cmds
   ./autogen.sh

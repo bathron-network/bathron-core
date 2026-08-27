@@ -8,13 +8,14 @@
     ],
     "vout": [
         {
-            "value": 0.00,
+            "value": 0,
             "n": 0,
             "scriptPubKey": {
                 "asm": "OP_DROP",
                 "hex": "75",
                 "type": "nonstandard"
-            }
+            },
+            "asset": "M0"
         }
     ],
     "hex": "0100000000010000000000000000017500000000"

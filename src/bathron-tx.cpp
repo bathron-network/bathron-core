@@ -421,19 +421,36 @@ static bool findSighashFlags(int& flags, const std::string& flagStr)
     return false;
 }
 
-static inline int64_t roundint64(double d)
-{
-    return (int64_t)(d > 0 ? d + 0.5 : d - 0.5);
-}
-
+//! Montant d'interface, en unités minimales entières.
+//!
+//! LAB-BATHRON-TX-AMOUNT-COHERENCE-1 — site d'appel oublié lors de la migration BATHRON.
+//!
+//! Cette fonction conservait la convention amont : elle lisait un double, le multipliait
+//! par COIN et refusait toute valeur supérieure à 21000000.0 AVANT mise à l'échelle. Elle
+//! était donc en contradiction directe avec le reste de l'outil :
+//!
+//!   - `outaddr=0.5` était refusé, alors que `prevtxs[].amount = 0.5` était accepté ;
+//!   - `prevtxs[].amount = 100000000` était refusé par un plafond hérité de BTC, alors que
+//!     nMaxMoneyOut vaut 2 100 000 000 000 000 unités minimales — huit ordres de grandeur
+//!     plus haut.
+//!
+//! Le montant issu de prevtxs entre dans le calcul de la signature : l'incohérence n'était
+//! pas cosmétique.
+//!
+//! On route désormais par ParseMoney(), la primitive canonique de src/utilmoneystr.cpp,
+//! déjà utilisée par ExtractAndValidateValue() pour outaddr/outscript/outpubkey/outdata.
+//! getValStr() donne le littéral brut aussi bien pour un nombre JSON que pour une chaîne,
+//! ce qui fait passer les deux formes par le même analyseur : un décimal est rejeté dans
+//! les deux cas, jamais tronqué ni arrondi.
 static CAmount AmountFromValue(const UniValue& value)
 {
     if (!value.isNum() && !value.isStr())
         throw std::runtime_error("Amount is not a number or string");
-    double dAmount = value.get_real();
-    if (dAmount <= 0.0 || dAmount > 21000000.0)
-        throw std::runtime_error("Invalid amount");
-    CAmount nAmount = roundint64(dAmount * COIN);
+
+    CAmount nAmount;
+    if (!ParseMoney(value.getValStr(), nAmount))
+        throw std::runtime_error("Invalid amount (must be an integer in minimal units)");
+
     if (!Params().GetConsensus().MoneyRange(nAmount))
         throw std::runtime_error("Amount out of range");
     return nAmount;
