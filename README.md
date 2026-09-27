@@ -1,34 +1,23 @@
-# BATHRON
+# BATHRON Core
 
-> **An open settlement protocol. Bitcoin remains the final asset.** Public testnet, no mainnet, no
-> proven market — see [Status & claims](https://bathron.org/docs/consensus/status-and-claims.html).
+BATHRON provides programmable settlement anchored in Bitcoin, with Bitcoin facts verified by every
+node without an oracle. M1 is the pivot settlement asset: Settlement Providers (SPs) handle BTC/M1
+and Liquidity Providers (LPs) handle X/M1. Third parties build applications using the protocol's
+primitives.
 
-This repository holds the **node, build files and `SECURITY.md`**. It does not restate the
-protocol's positioning, economics, security model or status: those have exactly one canonical
-source, and this README links to it.
+Public testnet on Bitcoin testnet4 · no mainnet · operator admission run by the project · no external audit yet
 
-- 📖 **Documentation (canonical):** <https://bathron.org/docs/> — start with
-  [Start here](https://bathron.org/docs/start-here.html)
-- 📖 **Documentation source:** <https://github.com/bathron-network/bathron-network.github.io/tree/main/docs/src>
-  ([documentation policy](https://bathron.org/docs/reference/documentation-policy.html))
-- 📊 **Status & claims** — what runs, what is not proven, what is never claimed:
-  <https://bathron.org/docs/consensus/status-and-claims.html>
-- 🔒 **Security model:** <https://bathron.org/docs/consensus/security-model.html> · report
-  privately to security@bathron.org (see [`SECURITY.md`](SECURITY.md))
-- 🧠 **Consensus & finality:** <https://bathron.org/docs/consensus/production-and-finality.html>
-- 🚀 **Run a peer node:** <https://bathron.org/docs/operate/run-a-node.html>
-- 📦 **Releases:** <https://github.com/bathron-network/bathron-core/releases>
+This repository contains the BATHRON node, RPC client and build files. SPs carry an Operator identity
+and may also produce blocks; an Operator identity is optional for LPs.
 
-## ⚠️ Experimental
+[Website](https://bathron.org) · [Overview](https://bathron.org/docs/overview.html) ·
+[Trust model](https://bathron.org/docs/trust.html) · [Operators](https://bathron.org/docs/operators.html) ·
+[Script reference](https://bathron.org/docs/script.html) ·
+[Transaction RPC](https://bathron.org/docs/rpc-transactions.html)
 
-This is experimental software running a **measurement network with a disposable genesis**. There is
-no mainnet. Anyone can run a **peer node** and verify the chain; **operator registration is not
-open** while the open-admission threat model is worked. The Bitcoin source read by consensus is
-**Bitcoin testnet4**. Everything else about what is and is not proven is on the
-[Status & claims](https://bathron.org/docs/consensus/status-and-claims.html) page — this file
-does not repeat it.
+## Build and run
 
-## Build
+### Build
 
 On Debian/Ubuntu:
 
@@ -40,12 +29,15 @@ sudo apt-get install -y build-essential libtool autotools-dev automake pkg-confi
 make -j$(nproc)
 ```
 
-This produces `src/bathrond` (daemon) and `src/bathron-cli` (RPC client). macOS instructions and
-release binaries: <https://bathron.org/docs/operate/run-a-node.html>.
+This produces `src/bathrond` (daemon) and `src/bathron-cli` (RPC client). See the
+[node guide](https://bathron.org/docs/node.html) for installation and operation, and
+[releases](https://github.com/bathron-network/bathron-core/releases) for published binaries.
 
-## Run a peer node on the measurement network
+### Run a peer node
 
-Only the public seed is needed to sync — no RPC access and no operator address are required:
+The public testnet is temporarily unavailable. The seed and expected genesis below are retained
+as operational reference; check the [node guide](https://bathron.org/docs/node.html) for current
+network and release information before connecting.
 
 ```bash
 mkdir -p ~/.bathron
@@ -53,18 +45,14 @@ printf 'testnet=1\n[test]\naddnode=57.131.33.151\n' > ~/.bathron/bathron.conf
 # release package: binaries are in bin/ — from a source build they are in src/
 ./bin/bathrond -testnet -daemon
 ./bin/bathron-cli -testnet getblockhash 0
-# expected genesis (measurement network, epoch 4):
+# expected genesis:
 # 691b0a7e8cb0e7ee159ef7a4fa10d9c6ddb2d5282e5bac7447846459ff54c730
-./bin/bathron-cli -testnet getblockcount   # syncs to the network tip
+./bin/bathron-cli -testnet getblockcount
 ```
-
-Block explorer: canonical source at
-[bathron-network/bathron-explorer](https://github.com/bathron-network/bathron-explorer).
 
 Verify that the genesis hash above matches before trusting any peer.
 
----
+## Security
 
-*One canonical documentation source — <https://bathron.org/docs/>. Where this README and the
-documentation disagree on a claimed capability, the documentation's
-[Status & claims](https://bathron.org/docs/consensus/status-and-claims.html) page prevails.*
+Report vulnerabilities privately to [security@bathron.org](mailto:security@bathron.org), not in a
+public issue. See [SECURITY.md](SECURITY.md).
