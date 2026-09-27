@@ -15,6 +15,13 @@ and may also produce blocks; an Operator identity is optional for LPs.
 [Script reference](https://bathron.org/docs/script.html) ·
 [Transaction RPC](https://bathron.org/docs/rpc-transactions.html)
 
+## Provenance
+
+BATHRON is derived from [PIVX](https://github.com/PIVX-Project/PIVX). Original copyright notices are retained in
+[COPYING](COPYING). Private development began in December 2025, with more than 1,400 commits across all branches.
+This public tree is an export of that work. The full development history is planned for publication in this
+repository.
+
 ## Build and run
 
 ### Build
