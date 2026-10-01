@@ -15,6 +15,12 @@ and may also produce blocks; an Operator identity is optional for LPs.
 [Script reference](https://bathron.org/docs/script.html) ·
 [Transaction RPC](https://bathron.org/docs/rpc-transactions.html)
 
+## Consensus engine
+
+The next BATHRON consensus engine, **N**, is specified in [bathron-network/n-spec](https://github.com/bathron-network/n-spec)
+(v0.7, architecture frozen candidate, not mainnet-qualified). This repository does not implement N yet: it contains the legacy
+consensus of the current public testnet, tagged `legacy-dmm-final`.
+
 ## Provenance
 
 BATHRON is derived from [PIVX](https://github.com/PIVX-Project/PIVX). Original copyright notices are retained in
