@@ -1,7 +1,7 @@
 # Contributing to BATHRON
 
-BATHRON is an open settlement protocol for Bitcoin, currently on a public
-testnet (see <https://bathron.org/docs/consensus/status-and-claims.html>).
+BATHRON is an open settlement protocol for Bitcoin. Network status:
+<https://bathron.org/docs/status.html>.
 This public repository is the reference implementation, populated by a
 controlled export (each publication is a flat commit with a `.PROVENANCE.txt`
 carrying the source commit id and tree hash). **Pull requests against it cannot

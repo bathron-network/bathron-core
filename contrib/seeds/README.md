@@ -1,5 +1,7 @@
 # Seeds
 
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+
 Utility to turn a raw node list into the fixed-seed table compiled into the
 client (`src/chainparamsseeds.h`).
 

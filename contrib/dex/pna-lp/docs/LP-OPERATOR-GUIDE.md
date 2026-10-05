@@ -1,11 +1,12 @@
 # LP Operator Guide
 
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+
 > **Historical prototype guide.** Written for the previous public testnet (Bitcoin **signet** leg,
-> USDC leg on an EVM testnet). The current measurement network reads Bitcoin **testnet4** and this
-> prototype has not been migrated; the demonstrators are not currently deployed. Kept as a
+> USDC leg on an EVM testnet). The former DMM measurement network read Bitcoin **testnet4** and this
+> prototype was not migrated; the demonstrators are not deployed. Kept as a
 > reference for the quote / HTLC-orchestration flow. Roles, economics and what is actually
-> demonstrated are documented canonically at <https://bathron.org/docs/markets/roles.html> and
-> <https://bathron.org/docs/consensus/status-and-claims.html>.
+> demonstrated are documented canonically at <https://bathron.org/docs/markets/roles.html>. Network status: <https://bathron.org/docs/status.html>.
 
 Guide for running a P&A Liquidity Provider node on the (previous) BATHRON testnet.
 

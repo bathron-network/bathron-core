@@ -1,11 +1,13 @@
 # BATHRON P&A swap frontend
 
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+
 > **Status: experimental prototype — not currently deployed.** This demonstrator was built for
-> the previous public testnet, whose Bitcoin leg used **Bitcoin signet**. The current measurement
-> network reads **Bitcoin testnet4**; the BTC leg of this prototype has not been migrated. It is
+> the previous public testnet, whose Bitcoin leg used **Bitcoin signet**. The former DMM
+> measurement network read **Bitcoin testnet4**; the BTC leg of this prototype was not migrated. It is
 > kept as a reference implementation of the quote / HTLC-orchestration split described in the
-> canonical documentation, not as a supported product. What the network can and cannot do today:
-> <https://bathron.org/docs/consensus/status-and-claims.html>. How markets and providers fit
+> canonical documentation, not as a supported product. Network status:
+> <https://bathron.org/docs/status.html>. How markets and providers fit
 > together: <https://bathron.org/docs/markets/how-a-market-appears.html> ·
 > <https://bathron.org/docs/markets/roles.html>.
 

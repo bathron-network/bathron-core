@@ -5,7 +5,7 @@ node without an oracle. M1 is the pivot settlement asset: Settlement Providers (
 and Liquidity Providers (LPs) handle X/M1. Third parties build applications using the protocol's
 primitives.
 
-Public testnet on Bitcoin testnet4 · no mainnet · operator admission run by the project · no external audit yet
+**Network status:** <https://bathron.org/docs/status.html>
 
 This repository contains the BATHRON node, RPC client and build files. SPs carry an Operator identity
 and may also produce blocks; an Operator identity is optional for LPs.
@@ -19,7 +19,7 @@ and may also produce blocks; an Operator identity is optional for LPs.
 
 The next BATHRON consensus engine, **N**, is specified in [bathron-network/n-spec](https://github.com/bathron-network/n-spec)
 (v0.7, architecture frozen candidate, not mainnet-qualified). This repository does not implement N yet: it contains the legacy
-consensus of the current public testnet, tagged `legacy-dmm-final`.
+DMM consensus, tagged `legacy-dmm-final`.
 
 ## Provenance
 
@@ -48,22 +48,7 @@ This produces `src/bathrond` (daemon) and `src/bathron-cli` (RPC client). See th
 
 ### Run a peer node
 
-The public testnet is temporarily unavailable. The seed and expected genesis below are retained
-as operational reference; check the [node guide](https://bathron.org/docs/node.html) for current
-network and release information before connecting.
-
-```bash
-mkdir -p ~/.bathron
-printf 'testnet=1\n[test]\naddnode=57.131.33.151\n' > ~/.bathron/bathron.conf
-# release package: binaries are in bin/ — from a source build they are in src/
-./bin/bathrond -testnet -daemon
-./bin/bathron-cli -testnet getblockhash 0
-# expected genesis:
-# 691b0a7e8cb0e7ee159ef7a4fa10d9c6ddb2d5282e5bac7447846459ff54c730
-./bin/bathron-cli -testnet getblockcount
-```
-
-Verify that the genesis hash above matches before trusting any peer.
+Network status: <https://bathron.org/docs/status.html>.
 
 ## Security
 

@@ -1,12 +1,13 @@
 # BATHRON Node Tools
 
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+
 Tools for BATHRON node operators. Anyone running a node can run these daemons — header
 publication and burn-claim submission are open to any node (`publishbtcheaders`,
 `submitburnclaim`); no permission or registration is involved.
 
-> **Network:** the current measurement network reads **Bitcoin testnet4**. The two daemons below
-> default to a testnet4 Bitcoin Core (`~/.bitcoin-testnet4`). What the network can and cannot do
-> today is documented once, canonically: <https://bathron.org/docs/consensus/status-and-claims.html>.
+> **Network:** the former DMM measurement network read **Bitcoin testnet4**. The two daemons below
+> default to a testnet4 Bitcoin Core (`~/.bitcoin-testnet4`). Network status: <https://bathron.org/docs/status.html>.
 > How Bitcoin facts enter consensus: <https://bathron.org/docs/bitcoin/facts-in-consensus.html>.
 
 ## Why run these?
@@ -20,9 +21,9 @@ publication and burn-claim submission are open to any node (`publishbtcheaders`,
 
 ### burn_signet.sh — historical (previous testnet only)
 
-> ⚠️ **Do not use on the current network.** This script burns on Bitcoin **signet**, which was the
-> Bitcoin source of the *previous* public testnet. The current measurement network reads
-> **testnet4**: a signet burn is **not** visible to it and mints nothing. The script is kept for
+> ⚠️ **Historical.** This script burns on Bitcoin **signet**, which was the Bitcoin source of the
+> signet-era public testnet. The former DMM measurement network read **testnet4**: a signet burn
+> was **not** visible to it and minted nothing. The script is kept for
 > reference only; a testnet4 equivalent is not shipped in this directory. Burn format and
 > destination script are documented canonically at
 > <https://bathron.org/docs/reference/spv.html#burn-format-bcs-v10>.
@@ -76,7 +77,7 @@ BTC Node --> [scan for burns] --> [check if claimed] --> submitburnclaimproof
 
 ## Requirements
 
-- **Bitcoin Core** with `txindex=1` — **testnet4** for the current measurement network (there is no mainnet)
+- **Bitcoin Core** with `txindex=1` — **testnet4** for the former DMM measurement network
 - **bathrond** running and synced
 - `bitcoin-cli` and `bathron-cli` accessible
 - `jq` installed
