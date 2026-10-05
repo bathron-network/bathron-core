@@ -1,9 +1,11 @@
 # P&A LP Architecture
 
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+
 > **Target model / operating objective:** described only in the canonical documentation —
 > <https://bathron.org/docs/markets/quotes-off-chain.html> (quotes off-chain, settlement
 > on-chain), <https://bathron.org/docs/markets/native-btc-pair.html> (paired hashlocked legs;
-> what is and is not demonstrated) and <https://bathron.org/docs/consensus/status-and-claims.html>.
+> what is and is not demonstrated). Network status: <https://bathron.org/docs/status.html>.
 > This file describes the *current* implementation of this prototype (built for the previous
 > signet-era testnet), which still contains legacy paths (marked below) that are **not** part
 > of the objective. It makes no claim about the network's capabilities.

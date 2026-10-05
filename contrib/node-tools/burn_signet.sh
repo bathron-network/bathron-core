@@ -2,9 +2,9 @@
 #
 # burn_signet.sh - Create and send a BTC burn transaction on Signet
 #
-# ⚠️ HISTORICAL — previous public testnet only. The current measurement network reads
-#    Bitcoin TESTNET4; a signet burn is not visible to it and mints nothing.
-#    Kept for reference. See https://bathron.org/docs/reference/spv.html
+# ⚠️ HISTORICAL — signet-era public testnet only. The former DMM measurement network read
+#    Bitcoin TESTNET4; a signet burn was not visible to it and minted nothing.
+#    Kept for reference. Network status: https://bathron.org/docs/status.html
 #
 # Usage: ./burn_signet.sh <bathron_address> <amount_sats>
 #

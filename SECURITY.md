@@ -1,7 +1,7 @@
 # Security Policy
 
-> **Experimental testnet software.** BATHRON is an experimental settlement kernel running
-> on a disposable public testnet. It carries **no mainnet**, no real value, and — as of this
+> **Experimental testnet software.** BATHRON is an experimental settlement kernel; network
+> status: <https://bathron.org/docs/status.html>. It carries **no mainnet**, no real value, and — as of this
 > writing — **no external security audit** has been performed. Test funds only. Do not use it
 > to hold or move value you cannot afford to lose entirely.
 
@@ -65,7 +65,7 @@ responsibly-disclosed reports.
 The public statement of what is and is not proven — no external audit yet, the operator set
 project-run, the open-network Sybil analysis, the unreviewed cross-chain settlement state
 machine — is maintained in one place and not duplicated here:
-<https://bathron.org/docs/consensus/status-and-claims.html>. The threat model itself is
-<https://bathron.org/docs/consensus/security-model.html>. Denial-of-service that merely stalls
+<https://bathron.org/docs/boundaries.html>. Network status:
+<https://bathron.org/docs/status.html>. Denial-of-service that merely stalls
 finality on the *experimental* testnet is a documented, accepted property of this phase, not
 an accepted report target.

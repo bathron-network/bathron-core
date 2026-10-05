@@ -1,8 +1,9 @@
 # BATHRON Wallet (Godot)
 
-> **Status: experimental prototype.** This component is a working demonstrator for
-> the BATHRON public testnet. It is suitable for testing and exploration, not for
-> production use, and its interfaces may change without notice.
+> **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
+>
+> **Experimental prototype.** This component was a demonstrator for the former DMM
+> public testnet. It is not for production use, and its interfaces may change without notice.
 
 
 Lightweight wallet GUI for BATHRON — **Thin client architecture**.
