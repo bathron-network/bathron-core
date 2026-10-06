@@ -1,19 +1,18 @@
 # Security Policy
 
-> **Experimental testnet software.** BATHRON is an experimental settlement kernel; network
-> status: <https://bathron.org/docs/status.html>. It carries **no mainnet**, no real value, and — as of this
-> writing — **no external security audit** has been performed. Test funds only. Do not use it
-> to hold or move value you cannot afford to lose entirely.
+This repository contains the **legacy DMM implementation**, not N. No public network runs today;
+see [Network status](https://bathron.org/docs/status.html). No external security audit has been
+performed. An external audit is a precondition before any public network carries value.
+
+The current application draft defines M0 as the only settlement asset. SPs and LPs are roles
+outside consensus and do not require a registered identity; producers are registered identities
+selected to produce blocks. There is no native finality in N.
 
 ## Supported versions
 
-Only the current testnet development line is supported. There is no long-term-support or
-back-port policy during the experimental phase.
-
-| Version | Supported |
-|---|---|
-| current testnet line (`v0.9.x-testnet`) | ✅ security reports accepted |
-| anything older | ❌ upgrade first |
+Security reports concerning the published legacy DMM code are accepted. It is retained for
+reference and is not a supported public network deployment. N has no public implementation yet.
+There is no long-term-support or back-port policy during this experimental phase.
 
 ## Reporting a vulnerability
 
@@ -34,14 +33,14 @@ Please include, to the extent you can:
 
 ## Scope
 
-In scope: **consensus** (block validation, finality, monetary invariants A5/A6/A7/A9), the
+In scope: **legacy DMM consensus** (block validation, quorum certificates, supply invariants A5/A6/A7/A9), the
 **SPV / Bitcoin-integration** path (headers, burn verification, reorg handling), **wallets**
-and key handling, the **RPC** surface, the **Clearing Provider / Liquidity Provider** flows
+and key handling, the **RPC** surface, the **Settlement Provider / Liquidity Provider** flows
 and their SDK, and the **block explorer**.
 
-Out of scope for now: denial-of-service that merely stalls the *experimental* testnet
-(known and accepted — the network is resettable by genesis reset), third-party
-infrastructure not operated by the project, and social-engineering of maintainers.
+Out of scope: third-party infrastructure not operated by the project and social-engineering
+of maintainers. Reports about the published code should state the affected version and provide
+reproduction evidence; the former DMM testnet is no longer running.
 
 ## What to expect (no invented timelines)
 
@@ -51,7 +50,7 @@ infrastructure not operated by the project, and social-engineering of maintainer
 - **Qualification:** we assess reproducibility, scope and severity, and confirm or dispute
   the finding with evidence.
 - **Coordinated disclosure:** we work with the reporter on a disclosure timeline; public
-  details are released only after a fix or an explicit decision, with credit to the reporter
+  details are released only after a fix, with credit to the reporter
   if they wish.
 
 ## No bug-bounty program
@@ -62,10 +61,6 @@ responsibly-disclosed reports.
 
 ## Known limitations
 
-The public statement of what is and is not proven — no external audit yet, the operator set
-project-run, the open-network Sybil analysis, the unreviewed cross-chain settlement state
-machine — is maintained in one place and not duplicated here:
-<https://bathron.org/docs/boundaries.html>. Network status:
-<https://bathron.org/docs/status.html>. Denial-of-service that merely stalls
-finality on the *experimental* testnet is a documented, accepted property of this phase, not
-an accepted report target.
+See [Known limitations](https://bathron.org/docs/limitations.html) for qualification still open,
+initial project-managed producers, bootstrap trust and the absence of an external audit.
+[Network status](https://bathron.org/docs/status.html) records network availability.
