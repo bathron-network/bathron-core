@@ -5,8 +5,8 @@
 > **Historical prototype guide.** Written for the previous public testnet (Bitcoin **signet** leg,
 > USDC leg on an EVM testnet). The former DMM measurement network read Bitcoin **testnet4** and this
 > prototype was not migrated; the demonstrators are not deployed. Kept as a
-> reference for the quote / HTLC-orchestration flow. Roles, economics and what is actually
-> demonstrated are documented canonically at <https://bathron.org/docs/markets/roles.html>. Network status: <https://bathron.org/docs/status.html>.
+> reference for the quote / HTLC-orchestration flow. Current provider roles, distinct from
+> this historical demonstrator, are documented at <https://bathron.org/docs/roles.html>. Network status: <https://bathron.org/docs/status.html>.
 
 Guide for running a P&A Liquidity Provider node on the (previous) BATHRON testnet.
 

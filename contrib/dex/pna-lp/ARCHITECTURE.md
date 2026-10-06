@@ -2,10 +2,10 @@
 
 > **Historical DMM testnet documentation.** Network status: <https://bathron.org/docs/status.html>.
 
-> **Target model / operating objective:** described only in the canonical documentation —
-> <https://bathron.org/docs/markets/quotes-off-chain.html> (quotes off-chain, settlement
-> on-chain), <https://bathron.org/docs/markets/native-btc-pair.html> (paired hashlocked legs;
-> what is and is not demonstrated). Network status: <https://bathron.org/docs/status.html>.
+> **Current application model:** <https://bathron.org/docs/between-providers.html>
+> explains settlement between providers on M0; <https://bathron.org/docs/settlement.html>
+> explains BTC/M0 settlement using Bitcoin payment evidence. These pages do not document
+> this historical prototype. Network status: <https://bathron.org/docs/status.html>.
 > This file describes the *current* implementation of this prototype (built for the previous
 > signet-era testnet), which still contains legacy paths (marked below) that are **not** part
 > of the objective. It makes no claim about the network's capabilities.

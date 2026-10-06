@@ -8,7 +8,7 @@ publication and burn-claim submission are open to any node (`publishbtcheaders`,
 
 > **Network:** the former DMM measurement network read **Bitcoin testnet4**. The two daemons below
 > default to a testnet4 Bitcoin Core (`~/.bitcoin-testnet4`). Network status: <https://bathron.org/docs/status.html>.
-> How Bitcoin facts enter consensus: <https://bathron.org/docs/bitcoin/facts-in-consensus.html>.
+> How Bitcoin facts enter consensus: <https://bathron.org/docs/bitcoin-facts.html>.
 
 ## Why run these?
 
@@ -24,9 +24,9 @@ publication and burn-claim submission are open to any node (`publishbtcheaders`,
 > ⚠️ **Historical.** This script burns on Bitcoin **signet**, which was the Bitcoin source of the
 > signet-era public testnet. The former DMM measurement network read **testnet4**: a signet burn
 > was **not** visible to it and minted nothing. The script is kept for
-> reference only; a testnet4 equivalent is not shipped in this directory. Burn format and
-> destination script are documented canonically at
-> <https://bathron.org/docs/reference/spv.html#burn-format-bcs-v10>.
+> reference only; a testnet4 equivalent is not shipped in this directory. Current burn rules
+> and the status of application formats are documented at
+> <https://bathron.org/docs/burns.html>.
 
 Historical usage (signet-era testnet):
 

@@ -5,11 +5,11 @@
 > **Status: experimental prototype — not currently deployed.** This demonstrator was built for
 > the previous public testnet, whose Bitcoin leg used **Bitcoin signet**. The former DMM
 > measurement network read **Bitcoin testnet4**; the BTC leg of this prototype was not migrated. It is
-> kept as a reference implementation of the quote / HTLC-orchestration split described in the
-> canonical documentation, not as a supported product. Network status:
+> kept as a historical reference implementation of the quote / HTLC-orchestration split,
+> not as a supported product. Network status:
 > <https://bathron.org/docs/status.html>. How markets and providers fit
-> together: <https://bathron.org/docs/markets/how-a-market-appears.html> ·
-> <https://bathron.org/docs/markets/roles.html>.
+> together: <https://bathron.org/docs/between-providers.html> ·
+> <https://bathron.org/docs/roles.html>.
 
 Liquidity-Provider dashboard and Python swap SDK for the BATHRON testnet:
 quoting, HTLC orchestration (BATHRON M1 leg; Bitcoin-signet and EVM legs, historical) and inventory views.
