@@ -1,8 +1,9 @@
 # Contributing to BATHRON
 
-BATHRON is an open settlement protocol for Bitcoin. Network status:
+BATHRON is an open settlement protocol for Bitcoin. No public network is currently running. Status:
 <https://bathron.org/docs/status.html>.
-This public repository is the reference implementation, populated by a
+This public repository contains the legacy DMM code (tag `legacy-dmm-final`),
+which does not yet implement N. It is populated by a
 controlled export (each publication is a flat commit with a `.PROVENANCE.txt`
 carrying the source commit id and tree hash). **Pull requests against it cannot
 be merged directly** — the next export would overwrite them — but they are
@@ -11,8 +12,7 @@ read, and accepted changes are applied upstream and credited.
 ## How to contribute today
 
 - **Issues** are the best channel: bug reports, consensus questions, security
-  concerns. Include your `bathrond --version`, the network (testnet), and
-  steps to reproduce.
+  concerns. Include your `bathrond --version` and steps to reproduce.
 - **Security-sensitive findings**: please do NOT open a public issue first —
   use the contact in the README and allow time for a fix to ship.
 - **Patches**: open an issue describing the change and attach a patch or a

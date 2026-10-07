@@ -36,7 +36,7 @@ Please include, to the extent you can:
 In scope: **legacy DMM consensus** (block validation, quorum certificates, supply invariants A5/A6/A7/A9), the
 **SPV / Bitcoin-integration** path (headers, burn verification, reorg handling), **wallets**
 and key handling, the **RPC** surface, the **Settlement Provider / Liquidity Provider** flows
-and their SDK, and the **block explorer**.
+and the **block explorer**.
 
 Out of scope: third-party infrastructure not operated by the project and social-engineering
 of maintainers. Reports about the published code should state the affected version and provide
