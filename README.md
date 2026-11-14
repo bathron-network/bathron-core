@@ -1,3 +1,7 @@
+> **Historical repository — superseded by N; not maintained; see https://github.com/bathron-network/n-spec**
+
+# Historical README
+
 # BATHRON Core
 
 BATHRON is being built for programmable settlement rooted in Bitcoin, with Bitcoin facts verified
